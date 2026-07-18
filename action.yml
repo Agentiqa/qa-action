@@ -1,0 +1,574 @@
+# Agentiqa QA — composite GitHub Action
+#
+# The versioned invocation contract for running your saved Agentiqa test plans
+# in CI (nightly / release-gate). Wraps the published `agentiqa` npm CLI:
+#   AGENTIQA_SERVICE_KEY=... npx agentiqa@<cli-version> run --engine <url> [selectors]
+#
+# Output is captured via AG_OUTPUT=json (NOT the legacy --json flag): the CLI
+# writes exactly one JSON envelope to stdout (schemaVersion:1) and all logs to
+# stderr. See README.md for the envelope schema, the inputs/outputs, and the
+# exit-code / fail-on gating contract.
+#
+# This file is a published mirror of the action maintained in the Agentiqa
+# monorepo; open an issue on this repo for questions or fixes.
+name: 'Agentiqa QA'
+description: 'Run saved Agentiqa test plans in CI (cloud or self-hosted BYOK), gate on exit code, and upload artifacts.'
+author: 'Agentiqa, Inc.'
+
+branding:
+  icon: 'check-circle'
+  color: 'purple'
+
+inputs:
+  service-key:
+    description: >-
+      Project-scoped Agentiqa CLI service key (sk_...). Required. Mint one from
+      the Agentiqa web app or desktop app (Project Settings -> CLI Service Keys ->
+      Create Key) or via /api/cli-quickstart-key. Pass it from a repository
+      secret; never inline.
+    required: true
+  api-url:
+    description: >-
+      Override the Agentiqa control-plane API URL (AGENTIQA_API_URL). Leave
+      empty to use production (https://agentiqa.com). Set to https://s.agentiqa.com
+      to target staging.
+    required: false
+    default: ''
+  runtime:
+    description: >-
+      Where the execution engine runs. One of:
+        cloud       - (default) hosted engine; the browser runs on Agentiqa's
+                      infra using the managed LLM. No Chromium on the runner.
+        self-hosted - the engine runs IN-PROCESS on this runner (BYOK): Chromium
+                      is downloaded on first use and `gemini-api-key` is REQUIRED.
+    required: false
+    default: 'cloud'
+  engine-url:
+    description: >-
+      Optional hosted-engine URL override; only meaningful with `runtime: cloud`.
+      Leave empty for the default Agentiqa cloud engine
+      (https://engine.agentiqa.com). Set https://s-engine.agentiqa.com for
+      staging, or the URL of your own hosted engine.
+    required: false
+    default: ''
+  gemini-api-key:
+    description: >-
+      Your own Google Gemini API key (BYOK). REQUIRED when
+      `runtime: self-hosted`; ignored in cloud mode (which uses Agentiqa's
+      managed LLM). Pass from a repository secret.
+    required: false
+    default: ''
+  plan-id:
+    description: 'Run a single test plan by id (tplan_...). Overrides label-ids when set.'
+    required: false
+    default: ''
+  label-ids:
+    description: 'Comma-separated label ids; runs all plans tagged with any of them. Ignored when plan-id is set.'
+    required: false
+    default: ''
+  mode:
+    description: 'Execution order for the selected plans: sequential | parallel.'
+    required: false
+    default: 'sequential'
+  cli-version:
+    description: >-
+      Version of the Agentiqa CLI to run: an npm dist-tag (latest, staging) or
+      an exact semver (e.g. 1.4.2). Default latest.
+    required: false
+    default: 'latest'
+  artifacts-dir:
+    description: 'Directory (relative to the workspace) for run artifacts and the JSON result envelope.'
+    required: false
+    default: 'agentiqa-artifacts'
+  fail-on:
+    description: >-
+      Exit-code gating policy. One of:
+        never         - never fail the job on the run outcome (report-only; read outputs downstream).
+        plan-failure  - (default) fail when a plan failed (exit 1) OR on a config/usage error
+                        (exit 2 — permanent, must fail loudly). Only retryable infra errors
+                        (exit 3) are swallowed, surfacing as outcome=infra-error for a
+                        digest/reporter to handle. Exit 3 also covers a NO-VERDICT batch —
+                        one whose only non-passing plans could not reach a verdict (a
+                        persistent engine disconnect, or the blocked cascade of one) — so a
+                        transient WS drop no longer reads as a red plan-failure. Read the
+                        `outcome` step output to gate more strictly (fail-on: any).
+        any           - fail on any nonzero exit. Use for release gates.
+    required: false
+    default: 'plan-failure'
+  node-version:
+    description: 'Node.js version to set up on the runner (18+).'
+    required: false
+    default: '22'
+  upload-artifacts:
+    description: 'Upload the artifacts directory (screenshots/video/result JSON) as a build artifact.'
+    required: false
+    default: 'true'
+  artifact-name:
+    description: 'Name for the uploaded artifact. Defaults to agentiqa-artifacts-<run_id>-<attempt> when empty.'
+    required: false
+    default: ''
+  share-links:
+    description: >-
+      Mint an opt-in PUBLIC, revocable share link for each cloud run (passes
+      --share to the CLI) so reviewers can open a run from the step summary
+      without an Agentiqa login. The Run column links the share URL when present.
+      Default false (privacy-conservative). Cloud runtime only.
+    required: false
+    default: 'false'
+  retention-days:
+    description: >-
+      Retention period (in days) for the uploaded artifact. Only applies when
+      upload-artifacts is true. Defaults to 14; the repo/org artifact-retention
+      cap still bounds it.
+    required: false
+    default: '14'
+
+outputs:
+  outcome:
+    description: >-
+      Run outcome bucket: passed | plan-failure | config-error | infra-error.
+      Note: exit 0 with zero executed plans buckets as config-error (a run
+      that tests nothing is not a pass).
+    value: ${{ steps.run.outputs.outcome }}
+  json-path:
+    description: 'Path to the captured JSON result envelope (schemaVersion:1). Empty if the run was not attempted.'
+    value: ${{ steps.run.outputs.json-path }}
+  exit-code:
+    description: 'Raw CLI process exit code (0 pass / 1 plan failure / 2 usage-config / 3 infra).'
+    value: ${{ steps.run.outputs.exit-code }}
+  plans-total:
+    description: 'Total plans reported in the JSON envelope (empty if no envelope).'
+    value: ${{ steps.run.outputs.plans-total }}
+  plans-passed:
+    description: 'Number of plans with outcome=passed.'
+    value: ${{ steps.run.outputs.plans-passed }}
+  plans-failed:
+    description: 'Number of plans with outcome != passed.'
+    value: ${{ steps.run.outputs.plans-failed }}
+  artifact-name:
+    description: 'Resolved artifact name used for the upload.'
+    value: ${{ steps.run.outputs.artifact-name }}
+  cli-resolved-version:
+    description: >-
+      The Agentiqa CLI version actually executed, resolved at run time from
+      `agentiqa --version` (e.g. 1.1.32). Makes verdict drift across publishes
+      attributable when cli-version is a floating dist-tag (latest/staging).
+      Empty if capture failed or the run was not attempted.
+    value: ${{ steps.run.outputs.cli-resolved-version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Sanitize retention-days
+      # upload-artifact fail-fasts on a non-numeric retention-days, and the
+      # upload step runs under `if: always()` — an invalid override would
+      # redden a job whose plans all passed. Coerce to a safe value up front;
+      # runs first so the output exists on every later always() path.
+      id: retention
+      shell: bash
+      env:
+        RETENTION_DAYS: ${{ inputs.retention-days }}
+      run: |
+        days="${RETENTION_DAYS//[[:space:]]/}"
+        if [ -z "$days" ]; then
+          : # empty = defer to the repo/org default retention
+        elif ! printf '%s' "$days" | grep -Eq '^[1-9][0-9]*$'; then
+          echo "::warning::Invalid retention-days '${RETENTION_DAYS}' — falling back to 14."
+          days=14
+        fi
+        echo "days=${days}" >> "$GITHUB_OUTPUT"
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Run Agentiqa test plans
+      id: run
+      shell: bash
+      env:
+        # Auth + control-plane. AGENTIQA_SERVICE_KEY alone authenticates the
+        # hosted engine (a short-lived credential is minted automatically).
+        AGENTIQA_SERVICE_KEY: ${{ inputs.service-key }}
+        AGENTIQA_API_URL: ${{ inputs.api-url }}
+        # Exported to GEMINI_API_KEY only when non-empty, so a job-level
+        # GEMINI_API_KEY env var is not clobbered by an empty input.
+        INPUT_GEMINI_API_KEY: ${{ inputs.gemini-api-key }}
+        # Capture machine-readable output without the legacy --json flag.
+        AG_OUTPUT: json
+        CLI_VERSION: ${{ inputs.cli-version }}
+        RUNTIME: ${{ inputs.runtime }}
+        ENGINE_URL: ${{ inputs.engine-url }}
+        PLAN_ID: ${{ inputs.plan-id }}
+        LABEL_IDS: ${{ inputs.label-ids }}
+        RUN_MODE: ${{ inputs.mode }}
+        ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        SHARE_LINKS: ${{ inputs.share-links }}
+        DEFAULT_CLOUD_ENGINE_URL: 'https://engine.agentiqa.com'
+      run: |
+        set -uo pipefail
+
+        # Emit a config-error outcome without running the CLI. The Gate step
+        # below turns it into a job failure per the fail-on policy.
+        fail_config() {
+          echo "::error::$1"
+          {
+            echo "outcome=config-error"
+            echo "exit-code=2"
+            echo "json-path="
+            echo "artifact-name="
+            echo "plans-total="
+            echo "plans-passed="
+            echo "plans-failed="
+            echo "cli-resolved-version="
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        if [ -z "${AGENTIQA_SERVICE_KEY:-}" ]; then
+          fail_config "service-key input is empty. Pass an Agentiqa CLI service key (sk_...) from a repository secret."
+        fi
+
+        case "$RUNTIME" in
+          cloud|self-hosted) ;;
+          *) fail_config "Invalid runtime '${RUNTIME}'. Expected one of: cloud | self-hosted." ;;
+        esac
+
+        if [ "$RUNTIME" = "self-hosted" ]; then
+          if [ -n "$INPUT_GEMINI_API_KEY" ]; then
+            export GEMINI_API_KEY="$INPUT_GEMINI_API_KEY"
+          fi
+          if [ -z "${GEMINI_API_KEY:-}" ]; then
+            fail_config "gemini-api-key is required when runtime: self-hosted (the in-process engine calls Gemini with your own key)."
+          fi
+          if [ -n "$ENGINE_URL" ]; then
+            fail_config "engine-url is only meaningful with runtime: cloud. To target your own hosted engine, use runtime: cloud with engine-url."
+          fi
+        fi
+
+        # Resolve artifacts dir to an absolute path and the JSON envelope target.
+        mkdir -p "$ARTIFACTS_DIR"
+        ARTIFACTS_ABS="$(cd "$ARTIFACTS_DIR" && pwd)"
+        JSON_PATH="$ARTIFACTS_ABS/agentiqa-result.json"
+
+        # Resolve artifact name (unique per run+attempt when not overridden).
+        if [ -n "$INPUT_ARTIFACT_NAME" ]; then
+          ARTIFACT_NAME="$INPUT_ARTIFACT_NAME"
+        else
+          ARTIFACT_NAME="agentiqa-artifacts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        fi
+
+        # Build the argv. Cloud runtime adds --engine <url>; self-hosted runs
+        # the engine in-process (BYOK). plan-id wins over label-ids.
+        args=(run --artifacts-dir "$ARTIFACTS_ABS")
+        if [ "$RUNTIME" = "cloud" ]; then
+          args+=(--engine "${ENGINE_URL:-$DEFAULT_CLOUD_ENGINE_URL}")
+        fi
+        if [ -n "$PLAN_ID" ]; then
+          args+=(--plan-id "$PLAN_ID")
+        elif [ -n "$LABEL_IDS" ]; then
+          args+=(--label-ids "$LABEL_IDS")
+        fi
+        if [ "$RUN_MODE" = "parallel" ]; then
+          args+=(--mode parallel)
+        fi
+        # Opt-in public share links (privacy-conservative default: off).
+        if [ "$SHARE_LINKS" = "true" ]; then
+          args+=(--share)
+        fi
+
+        # Capture the RESOLVED CLI version for verdict attribution across
+        # publishes: with a floating dist-tag (latest/staging) the same
+        # workflow can silently run different CLI builds week to week, so we
+        # record which one actually ran. `--version` writes exactly
+        # "<version>\n" to stdout and exits before any run/analytics/update
+        # output, so stdout is clean; this call also warms the npx cache the
+        # run below reuses. Best-effort — never fail the run on a capture hiccup.
+        CLI_RESOLVED_VERSION="$(npx -y "agentiqa@${CLI_VERSION}" --version 2>/dev/null | head -n1 | tr -d '[:space:]')"
+        if [[ ! "$CLI_RESOLVED_VERSION" =~ ^[0-9][0-9A-Za-z.+_-]*$ ]]; then
+          CLI_RESOLVED_VERSION=""
+        fi
+        echo "Resolved Agentiqa CLI: ${CLI_RESOLVED_VERSION:-unknown} (requested spec: agentiqa@${CLI_VERSION})"
+
+        echo "Running: npx -y agentiqa@${CLI_VERSION} ${args[*]}"
+
+        # AG_OUTPUT=json => one JSON envelope on stdout, logs on stderr.
+        # Capture stdout to the envelope file; let stderr flow to the log.
+        set +e
+        npx -y "agentiqa@${CLI_VERSION}" "${args[@]}" > "$JSON_PATH"
+        cli_exit_code="$?"
+        set -e
+
+        if [ -s "$JSON_PATH" ]; then
+          echo "----- agentiqa-result.json -----"
+          cat "$JSON_PATH"
+          echo ""
+          echo "--------------------------------"
+        elif [ "$cli_exit_code" != "0" ]; then
+          # Exit 0 without an envelope is handled below as a config-error;
+          # this warning covers only nonzero exits that died before emitting.
+          echo "::warning::No JSON envelope written (CLI exited ${cli_exit_code} before emitting output)."
+        fi
+
+        # Classify the outcome per the CLI exit-code contract (Decision 3 of
+        # the wedge spec): 0=pass, 1=plan failure, 2=usage/config, 3=infra.
+        # Unknown codes (e.g. signal deaths) are bucketed as config-error so
+        # they fail loudly under the default policy.
+        case "$cli_exit_code" in
+          0) outcome="passed" ;;
+          1) outcome="plan-failure" ;;
+          3) outcome="infra-error" ;;
+          *) outcome="config-error" ;;
+        esac
+
+        # Validate the envelope STRICTLY: stdout must be exactly one JSON
+        # object (jq slurp mode). Doc-by-doc `jq .` would accept a polluted
+        # multi-doc stream (stray log line + envelope) and let multiline
+        # values leak into GITHUB_OUTPUT; junk-prefixed stdout must fail
+        # validation rather than silently skip the guards. jq ships on
+        # GitHub-hosted ubuntu runners.
+        envelope_valid=""
+        envelope_ok=""
+        plans_total=""
+        plans_passed=""
+        plans_failed=""
+        if command -v jq >/dev/null 2>&1; then
+          if [ -s "$JSON_PATH" ] && jq -e -s 'length == 1 and (.[0] | type == "object")' "$JSON_PATH" >/dev/null 2>&1; then
+            envelope_valid="yes"
+            envelope_ok="$(jq -r -s 'if .[0].ok == true then "true" else "false" end' "$JSON_PATH")"
+            plans_total="$(jq -r -s 'if (.[0].plans | type) == "array" then (.[0].plans | length) else "" end' "$JSON_PATH")"
+            plans_passed="$(jq -r -s 'if (.[0].plans | type) == "array" then ([.[0].plans[] | select(.outcome == "passed")] | length) else "" end' "$JSON_PATH")"
+            plans_failed="$(jq -r -s 'if (.[0].plans | type) == "array" then ([.[0].plans[] | select(.outcome != "passed")] | length) else "" end' "$JSON_PATH")"
+          fi
+        else
+          echo "::warning::jq not found on the runner — cannot validate the result envelope."
+        fi
+
+        # Counts must be plain integers before they reach GITHUB_OUTPUT.
+        [[ "$plans_total" =~ ^[0-9]+$ ]] || plans_total=""
+        [[ "$plans_passed" =~ ^[0-9]+$ ]] || plans_passed=""
+        [[ "$plans_failed" =~ ^[0-9]+$ ]] || plans_failed=""
+
+        # Exit 0 is only a pass when backed by a valid envelope: exactly one
+        # JSON object with ok:true and a plans array. Missing stdout, polluted
+        # stdout, ok:false, or a missing plans key would otherwise be a false
+        # green. Fail-loud beats fail-silent.
+        if [ "$cli_exit_code" = "0" ]; then
+          if [ "$envelope_valid" != "yes" ] || [ "$envelope_ok" != "true" ] || [ -z "$plans_total" ]; then
+            echo "::error::CLI exited 0 but produced no valid result envelope — treating as configuration error, not a pass."
+            outcome="config-error"
+          elif [ "$plans_total" = "0" ]; then
+            # Zero-plans guard: an empty/wrong project or a selector matching
+            # no plans must never turn a nightly green while testing nothing.
+            echo "::error::CLI exited 0 but executed zero plans — a run that executes zero plans is a configuration error, not a pass. Check the service key's project and the plan-id/label-ids selectors."
+            outcome="config-error"
+          fi
+        fi
+
+        # GITHUB_OUTPUT is line-based: never write an unvalidated multiline
+        # value there (a stray newline would inject bogus keys / corrupt the
+        # file). Counts are regex-validated above; strings are checked here.
+        emit_output() {
+          local key="$1" value="$2"
+          if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+            echo "::warning::Refusing to write multiline value for ${key} to GITHUB_OUTPUT; emitting empty."
+            value=""
+          fi
+          echo "${key}=${value}" >> "$GITHUB_OUTPUT"
+        }
+        emit_output "outcome" "$outcome"
+        emit_output "exit-code" "$cli_exit_code"
+        emit_output "json-path" "$JSON_PATH"
+        emit_output "artifact-name" "$ARTIFACT_NAME"
+        emit_output "plans-total" "$plans_total"
+        emit_output "plans-passed" "$plans_passed"
+        emit_output "plans-failed" "$plans_failed"
+        emit_output "cli-resolved-version" "$CLI_RESOLVED_VERSION"
+
+        echo "Agentiqa run outcome=${outcome} (cli exit ${cli_exit_code}); plans total=${plans_total:-?} passed=${plans_passed:-?} failed=${plans_failed:-?}; agentiqa=${CLI_RESOLVED_VERSION:-unknown}"
+
+        # This step never fails on the CLI outcome — the Gate step below owns
+        # policy so that artifact upload always runs first.
+        exit 0
+
+    - name: Upload Agentiqa artifacts
+      if: ${{ always() && inputs.upload-artifacts == 'true' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ steps.run.outputs.artifact-name || 'agentiqa-artifacts' }}
+        path: ${{ inputs.artifacts-dir }}
+        if-no-files-found: warn
+        retention-days: ${{ steps.retention.outputs.days }}
+
+    - name: Render step summary + annotations
+      # Human-readable results in the Actions UI: a per-plan table (outcome,
+      # duration, engine video link, screenshot count) written to the job step
+      # summary, plus a ::error annotation per failed plan so failures surface
+      # in the run UI and PR checks — no log-digging or artifact download needed.
+      # Reads only the schemaVersion:1 envelope; no secret is ever referenced.
+      if: ${{ always() }}
+      shell: bash
+      env:
+        JSON_PATH: ${{ steps.run.outputs.json-path }}
+        OUTCOME: ${{ steps.run.outputs.outcome }}
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        PLANS_TOTAL: ${{ steps.run.outputs.plans-total }}
+        PLANS_PASSED: ${{ steps.run.outputs.plans-passed }}
+        ARTIFACT_NAME: ${{ steps.run.outputs.artifact-name }}
+        UPLOAD_ARTIFACTS: ${{ inputs.upload-artifacts }}
+        CLI_RESOLVED_VERSION: ${{ steps.run.outputs.cli-resolved-version }}
+      run: |
+        set -uo pipefail
+        SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
+        emit() { printf '%s\n' "$1" >> "$SUMMARY"; }
+
+        emit "## Agentiqa QA — \`${OUTCOME:-unknown}\`"
+        emit ""
+        ver_suffix=""
+        [ -n "${CLI_RESOLVED_VERSION:-}" ] && ver_suffix=" · agentiqa \`v${CLI_RESOLVED_VERSION}\`"
+        emit "**${PLANS_PASSED:-?} / ${PLANS_TOTAL:-?} plans passed** · CLI exit \`${EXIT_CODE:-?}\`${ver_suffix}"
+        emit ""
+
+        if ! command -v jq >/dev/null 2>&1; then
+          emit "> \`jq\` not available on the runner — per-plan table skipped."
+          exit 0
+        fi
+
+        # Only render from a strictly-valid single-object envelope.
+        if [ -z "${JSON_PATH:-}" ] || [ ! -s "${JSON_PATH:-}" ] \
+           || ! jq -e -s 'length==1 and (.[0]|type=="object")' "$JSON_PATH" >/dev/null 2>&1; then
+          emit "> No valid result envelope was produced for this run — see the job log."
+          exit 0
+        fi
+
+        # Failure envelope (ok:false): show the error, annotate, stop.
+        if [ "$(jq -r -s '.[0].ok' "$JSON_PATH")" = "false" ]; then
+          code="$(jq -r -s '.[0].error.code // "error"' "$JSON_PATH")"
+          msg="$(jq -r -s '.[0].error.message // ""' "$JSON_PATH" | tr '\n\r' '  ')"
+          emit "> **Run error (\`${code}\`):** ${msg}"
+          echo "::error title=Agentiqa run error::${code}: ${msg}"
+          exit 0
+        fi
+
+        emit "| Plan | Outcome | Duration | Video | Run |"
+        emit "| --- | --- | --- | --- | --- |"
+
+        n="$(jq -r -s '.[0].plans | length' "$JSON_PATH")"
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+        fail_lines=()
+        i=0
+        while [ "$i" -lt "$n" ]; do
+          title="$(jq -r -s --argjson i "$i" '.[0].plans[$i].title // "(untitled)"' "$JSON_PATH")"
+          pout="$(jq -r -s --argjson i "$i" '.[0].plans[$i].outcome // "?"' "$JSON_PATH")"
+          dur="$(jq -r -s --argjson i "$i" '.[0].plans[$i].durationSec // ""' "$JSON_PATH")"
+          vurl="$(jq -r -s --argjson i "$i" '.[0].plans[$i].videoUrl // ""' "$JSON_PATH")"
+          rurl="$(jq -r -s --argjson i "$i" '.[0].plans[$i].runUrl // ""' "$JSON_PATH")"
+          surl="$(jq -r -s --argjson i "$i" '.[0].plans[$i].shareUrl // ""' "$JSON_PATH")"
+          psum="$(jq -r -s --argjson i "$i" '.[0].plans[$i].summary // ""' "$JSON_PATH")"
+
+          if [ "$pout" = "passed" ]; then icon="✅ passed"; else icon="❌ ${pout}"; fi
+          if [ -n "$dur" ]; then durcell="${dur}s"; else durcell="–"; fi
+          # Link only a public http(s) URL; never a local file path.
+          case "$vurl" in
+            http://*|https://*) vcell="[▶ video](${vurl})" ;;
+            *) vcell="–" ;;
+          esac
+          # Run column: prefer the opt-in PUBLIC share link (no login wall) when
+          # present (--share / share-links: true), else the authed run-detail
+          # deep link. Present for cloud runs only; "–" for embedded/self-hosted.
+          if [ -n "$surl" ]; then linkurl="$surl"; else linkurl="$rurl"; fi
+          case "$linkurl" in
+            http://*|https://*) rcell="[open ↗](${linkurl})" ;;
+            *) rcell="–" ;;
+          esac
+          safe_title="$(printf '%s' "$title" | sed 's/|/\\|/g')"
+          emit "| ${safe_title} | ${icon} | ${durcell} | ${vcell} | ${rcell} |"
+
+          # Per-plan ::error annotation + a COMPACT Failures entry (short reason
+          # + the run link) for anything not passed — the full context is one
+          # click away in the run, so no wall-of-text summary here.
+          if [ "$pout" != "passed" ]; then
+            reason="$psum"
+            [ -z "$reason" ] && reason="Plan '${title}' outcome=${pout}"
+            reason="$(printf '%s' "$reason" | tr '\n\r' '  ')"
+            echo "::error title=Agentiqa plan failed: ${title}::${reason}"
+            short="${reason:0:180}"
+            [ "${#reason}" -gt 180 ] && short="${short}…"
+            link=""
+            case "$rurl" in http://*|https://*) link=" → [open run ↗](${rurl})" ;; esac
+            fail_lines+=("- **${title}** — ${short}${link}")
+          fi
+          i=$((i + 1))
+        done
+
+        if [ "${#fail_lines[@]}" -gt 0 ]; then
+          emit ""
+          emit "### Failures"
+          for fl in "${fail_lines[@]}"; do emit "$fl"; done
+        fi
+
+        if [ "${UPLOAD_ARTIFACTS:-}" = "true" ] && [ -n "${ARTIFACT_NAME:-}" ]; then
+          emit ""
+          emit "_Screenshots, video and \`result.json\`: download the **${ARTIFACT_NAME}** artifact from this run._"
+        fi
+
+    - name: Gate on outcome
+      shell: bash
+      env:
+        OUTCOME: ${{ steps.run.outputs.outcome }}
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -euo pipefail
+
+        case "$FAIL_ON" in
+          never|plan-failure|any) ;;
+          *)
+            echo "::error::Invalid fail-on value '${FAIL_ON}'. Expected one of: never | plan-failure | any."
+            exit 2
+            ;;
+        esac
+
+        echo "Gating with fail-on=${FAIL_ON}; outcome=${OUTCOME} (cli exit ${EXIT_CODE})."
+
+        # Policy matrix:
+        #   never        -> report-only, never fails.
+        #   plan-failure -> fails on plan-failure AND config-error (permanent
+        #                   problems must fail loudly); swallows ONLY the
+        #                   retryable infra-error bucket (exit 3).
+        #   any          -> fails on any nonzero outcome.
+        case "$OUTCOME" in
+          passed)
+            echo "All selected plans passed."
+            exit 0
+            ;;
+          plan-failure)
+            if [ "$FAIL_ON" = "never" ]; then
+              echo "::warning::A plan failed (exit ${EXIT_CODE}), but fail-on=never — not failing the job."
+              exit 0
+            fi
+            echo "::error::A plan failed (cli exit ${EXIT_CODE})."
+            exit 1
+            ;;
+          config-error)
+            if [ "$FAIL_ON" = "never" ]; then
+              echo "::warning::Config/usage error (cli exit ${EXIT_CODE}), but fail-on=never — not failing the job."
+              exit 0
+            fi
+            echo "::error::Config/usage error (cli exit ${EXIT_CODE}) — permanent; fix the workflow inputs, service key, or plan selectors."
+            exit 1
+            ;;
+          infra-error)
+            if [ "$FAIL_ON" = "any" ]; then
+              echo "::error::Infra/runtime error (cli exit ${EXIT_CODE})."
+              exit 1
+            fi
+            echo "::warning::Retryable infra error (cli exit ${EXIT_CODE}); fail-on=${FAIL_ON} does not gate on it. Inspect the outcome output / artifacts."
+            exit 0
+            ;;
+          *)
+            echo "::error::Unknown outcome '${OUTCOME}'."
+            exit 1
+            ;;
+        esac
