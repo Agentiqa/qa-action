@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://docs.agentiqa.com
+    about: Setup guides, inputs/outputs reference, and troubleshooting.
+  - name: Agentiqa support
+    url: mailto:support@agentiqa.com
+    about: Account, billing, or product questions.
