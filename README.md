@@ -62,9 +62,9 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | ------------------ | --------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `service-key`      | **yes**                     | —                                 | Project-scoped CLI service key (`sk_...`). Pass from a secret, never inline.                                 |
 | `api-url`          | no                          | `''` (prod: `agentiqa.com`)       | Control-plane API override (`AGENTIQA_API_URL`). Set `https://s.agentiqa.com` for staging.                  |
-| `runtime`          | no                          | `cloud`                           | Where the engine runs: `cloud` (hosted, managed LLM) or `self-hosted` (in-process on the runner, BYOK).     |
+| `runtime`          | no                          | `cloud`                           | _Advanced._ Execution engine location; defaults to `cloud` (browser on Agentiqa's infrastructure, managed LLM). Leave unset for the standard hosted flow. |
 | `engine-url`       | no                          | `''` (cloud default engine)       | Hosted-engine URL override; only meaningful with `runtime: cloud`. Empty → `https://engine.agentiqa.com`.   |
-| `gemini-api-key`   | when `runtime: self-hosted` | `''`                              | Your own Gemini key (BYOK). Required for self-hosted; ignored in cloud mode.                                |
+| `gemini-api-key`   | no                          | `''`                              | _Advanced._ Ignored for cloud runs, which use Agentiqa's managed LLM.                                        |
 | `plan-id`          | no                          | `''`                              | Run a single plan by id (`tplan_...`). Overrides `label-ids`.                                                |
 | `label-ids`        | no                          | `''`                              | Comma-separated label ids — run all plans tagged with any of them.                                          |
 | `mode`             | no                          | `sequential`                      | `sequential` or `parallel`.                                                                                  |
@@ -138,51 +138,10 @@ A few things worth internalizing:
 
 ---
 
-## Cloud vs self-hosted (BYOK)
-
-The `runtime` input is the mode switch:
-
-|                                 | **`runtime: cloud`** (default)                | **`runtime: self-hosted`**             |
-| ------------------------------- | --------------------------------------------- | -------------------------------------- |
-| Where the browser runs          | Agentiqa's cloud                              | On your GitHub Actions runner          |
-| LLM provider                    | Agentiqa **managed** LLM                      | **Your own Gemini key**                |
-| Required inputs                 | `service-key`                                 | `service-key` + `gemini-api-key`       |
-| Installs Chromium on the runner | No                                            | Yes (downloaded on first use)          |
-| `engine-url` input              | Optional override (default cloud engine)      | Must be empty (engine runs in-process) |
-| Plan requirement                | A plan that includes managed LLM (Pro / Team) | Any plan, including free Community     |
-
-Agentiqa Cloud always runs on the managed LLM — there is **no way to supply your own Gemini key to the cloud engine**. For BYOK, use `runtime: self-hosted`.
-
-**Self-hosted example:**
-
-```yaml
-- uses: Agentiqa/qa-action@v1
-  with:
-    service-key: ${{ secrets.AGENTIQA_SERVICE_KEY }}
-    runtime: self-hosted
-    gemini-api-key: ${{ secrets.GEMINI_API_KEY }} # required for self-hosted
-```
-
-To speed up repeat self-hosted runs, cache Chromium **before** the action step:
-
-```yaml
-- uses: actions/cache@v6
-  with:
-    path: ~/.cache/ms-playwright
-    key: ${{ runner.os }}-playwright
-```
-
----
-
 ## Artifacts and video
 
 - The action always uploads `artifacts-dir` (default `agentiqa-artifacts`) — `if-no-files-found: warn`, retention `retention-days` (default `14`, bounded by the repo/org cap) — including the `agentiqa-result.json` envelope, screenshots, and any recorded video. Disable with `upload-artifacts: false`.
-- **Video depends on runtime.** In **cloud** (`runtime: cloud`, default) runs the session video is recorded **server-side on Agentiqa's infrastructure** — no runner-side ffmpeg is needed, and its public URL surfaces as `videoUrl` in the envelope. In **self-hosted (BYOK)** runs the video is rendered locally with `ffmpeg`, which GitHub-hosted runners do not ship: without it the in-process engine produces **no `.mp4`** (screenshots are still captured) and prints a non-fatal warning. To capture video in self-hosted mode, install ffmpeg before the action:
-
-  ```yaml
-  - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-  ```
-
+- **Video is recorded server-side.** On cloud runs the session video is recorded on Agentiqa's infrastructure — no runner-side ffmpeg is needed — and its public URL surfaces as `videoUrl` in the envelope and the step-summary table.
 - **Public share links (opt-in).** `share-links: true` mints an opt-in **public**, revocable share link for each cloud run (`--share`) so reviewers can open a run from the step summary without an Agentiqa login. The default is `false` (privacy-conservative). Cloud runtime only.
 
 ---
@@ -231,7 +190,7 @@ The envelope schema (`schemaVersion:1`) — one JSON object on stdout, all logs 
 { "ok": false, "schemaVersion": 1, "error": { "code": "run_error", "message": "..." } }
 ```
 
-On **cloud** runs each passing/failing plan may additionally carry two links (both rendered in the step-summary table): `runUrl`, a deep link to the run's detail page in the Agentiqa web app — **viewable only by a signed-in project/org member**; and `videoUrl`, the engine's session recording — a **public, durable link** anyone with the URL can open (safe to embed, but treat it as public). With `share-links: true`, a public `shareUrl` is also minted per run and preferred in the Run column. Self-hosted/embedded runs emit neither `runUrl` nor `videoUrl` (`runUrl` needs a hosted engine; `videoUrl` needs the server-side recording).
+On **cloud** runs each passing/failing plan may additionally carry two links (both rendered in the step-summary table): `runUrl`, a deep link to the run's detail page in the Agentiqa web app — **viewable only by a signed-in project/org member**; and `videoUrl`, the engine's session recording — a **public, durable link** anyone with the URL can open (safe to embed, but treat it as public). With `share-links: true`, a public `shareUrl` is also minted per run and preferred in the Run column.
 
 ---
 

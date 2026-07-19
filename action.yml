@@ -1,7 +1,8 @@
 # Agentiqa QA — composite GitHub Action
 #
 # The versioned invocation contract for running your saved Agentiqa test plans
-# in CI (nightly / release-gate). Wraps the published `agentiqa` npm CLI:
+# in CI (nightly / release-gate) on Agentiqa Cloud. Wraps the published
+# `agentiqa` npm CLI against the hosted engine:
 #   AGENTIQA_SERVICE_KEY=... npx agentiqa@<cli-version> run --engine <url> [selectors]
 #
 # Output is captured via AG_OUTPUT=json (NOT the legacy --json flag): the CLI
@@ -12,7 +13,7 @@
 # This file is a published mirror of the action maintained in the Agentiqa
 # monorepo; open an issue on this repo for questions or fixes.
 name: 'Agentiqa QA'
-description: 'Run saved Agentiqa test plans in CI (cloud or self-hosted BYOK), gate on exit code, and upload artifacts.'
+description: 'Run saved Agentiqa test plans in CI on Agentiqa Cloud, gate on exit code, and upload artifacts.'
 author: 'Agentiqa, Inc.'
 
 branding:
@@ -36,11 +37,9 @@ inputs:
     default: ''
   runtime:
     description: >-
-      Where the execution engine runs. One of:
-        cloud       - (default) hosted engine; the browser runs on Agentiqa's
-                      infra using the managed LLM. No Chromium on the runner.
-        self-hosted - the engine runs IN-PROCESS on this runner (BYOK): Chromium
-                      is downloaded on first use and `gemini-api-key` is REQUIRED.
+      Advanced. Where the execution engine runs; defaults to `cloud` — the
+      browser runs on Agentiqa's infrastructure with the managed LLM and no
+      Chromium on the runner. Leave unset for the standard hosted flow.
     required: false
     default: 'cloud'
   engine-url:
@@ -53,9 +52,8 @@ inputs:
     default: ''
   gemini-api-key:
     description: >-
-      Your own Google Gemini API key (BYOK). REQUIRED when
-      `runtime: self-hosted`; ignored in cloud mode (which uses Agentiqa's
-      managed LLM). Pass from a repository secret.
+      Advanced. Ignored for cloud runs, which use Agentiqa's managed LLM. When
+      set, pass it from a repository secret.
     required: false
     default: ''
   plan-id:
@@ -259,8 +257,8 @@ runs:
           ARTIFACT_NAME="agentiqa-artifacts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         fi
 
-        # Build the argv. Cloud runtime adds --engine <url>; self-hosted runs
-        # the engine in-process (BYOK). plan-id wins over label-ids.
+        # Build the argv. Cloud runtime adds --engine <url>; the in-process
+        # runtime runs the engine locally. plan-id wins over label-ids.
         args=(run --artifacts-dir "$ARTIFACTS_ABS")
         if [ "$RUNTIME" = "cloud" ]; then
           args+=(--engine "${ENGINE_URL:-$DEFAULT_CLOUD_ENGINE_URL}")
