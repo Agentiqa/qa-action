@@ -12,8 +12,8 @@
 #
 # This file is a published mirror of the action maintained in the Agentiqa
 # monorepo; open an issue on this repo for questions or fixes.
-name: 'Agentiqa QA'
-description: 'Run saved Agentiqa test plans in CI on Agentiqa Cloud, gate on exit code, and upload artifacts.'
+name: 'Agentiqa — End-to-End Agentic QA in CI'
+description: 'E2E tests written in plain English, run against your live app. Results, videos and run links right in your workflow.'
 author: 'Agentiqa, Inc.'
 
 branding:

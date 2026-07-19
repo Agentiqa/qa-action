@@ -1,4 +1,4 @@
-# Agentiqa QA — GitHub Action
+# Agentiqa — End-to-End Agentic QA in CI
 
 Run your saved [Agentiqa](https://agentiqa.com) test plans in CI — nightly, on a release branch, or on demand — and gate the job on the result.
 
