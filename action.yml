@@ -109,7 +109,7 @@ inputs:
     description: >-
       DEPRECATED no-op, accepted so existing workflows keep working. Public
       share links were retired 2026-07 in favor of org-member team access: the
-      step summary's Run details column always links a cloud run's detail page, and
+      step summary's Details column always links a cloud run's detail page, and
       whoever opens it needs an Agentiqa login in the run owner's organization.
     required: false
     default: 'false'
@@ -425,18 +425,18 @@ runs:
         SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
         emit() { printf '%s\n' "$1" >> "$SUMMARY"; }
 
-        emit "## Agentiqa QA — \`${OUTCOME:-unknown}\`"
+        emit "## Agentiqa QA — AI E2E Testing"
         emit ""
         ver_suffix=""
         [ -n "${CLI_RESOLVED_VERSION:-}" ] && ver_suffix=" · agentiqa \`v${CLI_RESOLVED_VERSION}\`"
-        emit "**${PLANS_PASSED:-?} / ${PLANS_TOTAL:-?} plans passed** · CLI exit \`${EXIT_CODE:-?}\`${ver_suffix}"
+        emit "**${PLANS_PASSED:-?} / ${PLANS_TOTAL:-?} plans passed** · outcome \`${OUTCOME:-unknown}\` · CLI exit \`${EXIT_CODE:-?}\`${ver_suffix}"
 
         # Batch page link (the envelope's optional TOP-LEVEL `batchUrl`): one
         # click from the check to every run of this CI invocation, grouped on
         # the hosted batch page. Emitted directly under the headline stat so it
         # is reachable even when the table below is skipped. Present only when
         # the CLI minted a batch row against a hosted control plane; the same
-        # http(s) guard as the per-plan Run details cell keeps a malformed or
+        # http(s) guard as the per-plan Details cell keeps a malformed or
         # self-hosted value out of the summary. Read defensively — a runner
         # without jq or an unparseable envelope just omits the line, and the
         # fuller guards below still emit their own explanation.
@@ -475,7 +475,7 @@ runs:
           exit 0
         fi
 
-        emit "| Plan | Outcome | Run details | Reason |"
+        emit "| Plan | Outcome | Details | Reason |"
         emit "| --- | --- | --- | --- |"
 
         n="$(jq -r -s '.[0].plans | length' "$JSON_PATH")"
@@ -487,8 +487,8 @@ runs:
           rurl="$(jq -r -s --argjson i "$i" '.[0].plans[$i].runUrl // ""' "$JSON_PATH")"
           psum="$(jq -r -s --argjson i "$i" '.[0].plans[$i].summary // ""' "$JSON_PATH")"
 
-          if [ "$pout" = "passed" ]; then icon="✅ passed"; else icon="❌ ${pout}"; fi
-          # Run details column: the run-detail deep link (video, steps, evidence
+          if [ "$pout" = "passed" ]; then icon="✅&nbsp;passed"; else icon="❌&nbsp;${pout}"; fi
+          # Details column: the run-detail deep link (video, steps, evidence
           # live there), opened by org members of the run owner (team access,
           # #1803 — public share links are gone). Link only a public http(s)
           # URL — cloud runs only; "–" for embedded/self-hosted.

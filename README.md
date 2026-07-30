@@ -74,7 +74,7 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `node-version`     | no                          | `22`                              | Node.js version to set up on the runner (18+).                                                               |
 | `upload-artifacts` | no                          | `true`                            | Upload the artifacts dir (screenshots / video / result JSON) as a build artifact.                           |
 | `artifact-name`    | no                          | `''` → `agentiqa-artifacts-<run>` | Name for the uploaded artifact. Defaults to `agentiqa-artifacts-<run_id>-<attempt>` when empty.             |
-| `share-links`      | no                          | `false`                           | **Deprecated no-op**, accepted so existing workflows keep working. Public share links were retired in favor of org-member team access: the step summary's Run details column always links a cloud run's detail page (Agentiqa login in the run owner's org required). |
+| `share-links`      | no                          | `false`                           | **Deprecated no-op**, accepted so existing workflows keep working. Public share links were retired in favor of org-member team access: the step summary's Details column always links a cloud run's detail page (Agentiqa login in the run owner's org required). |
 | `retention-days`   | no                          | `14`                              | Retention (days) for the uploaded artifact. Applies when `upload-artifacts: true`; the repo/org artifact-retention cap still bounds it. |
 
 ## Outputs
@@ -141,8 +141,8 @@ A few things worth internalizing:
 ## Artifacts and video
 
 - The action always uploads `artifacts-dir` (default `agentiqa-artifacts`) — `if-no-files-found: warn`, retention `retention-days` (default `14`, bounded by the repo/org cap) — including the `agentiqa-result.json` envelope, screenshots, and any recorded video. Disable with `upload-artifacts: false`.
-- **Video is recorded server-side.** On cloud runs the session video is recorded on Agentiqa's infrastructure — no runner-side ffmpeg is needed — and its public URL surfaces as `videoUrl` in the envelope (and on the run detail page linked from the step summary's Run details column).
-- **Share links are retired.** `share-links` is accepted as a deprecated no-op so existing workflows keep working. Public share links were retired in favor of org-member team access: the step summary's Run details column always links a cloud run's detail page, and whoever opens it needs an Agentiqa login in the run owner's organization.
+- **Video is recorded server-side.** On cloud runs the session video is recorded on Agentiqa's infrastructure — no runner-side ffmpeg is needed — and its public URL surfaces as `videoUrl` in the envelope (and on the run detail page linked from the step summary's Details column).
+- **Share links are retired.** `share-links` is accepted as a deprecated no-op so existing workflows keep working. Public share links were retired in favor of org-member team access: the step summary's Details column always links a cloud run's detail page, and whoever opens it needs an Agentiqa login in the run owner's organization.
 
 ---
 
@@ -192,7 +192,7 @@ The envelope schema (`schemaVersion:1`) — one JSON object on stdout, all logs 
 
 The top-level **`batchUrl`** is the page for the whole invocation — every plan of this run, grouped, with per-run outcomes and reasons. The step summary renders it as a **View full results** link under the headline. It is present only for hosted runs that minted a batch record, omitted otherwise (additive, so `schemaVersion` stays `1`), and — like `runUrl` — viewable only by a signed-in project/org member.
 
-On **cloud** runs each passing/failing plan may additionally carry two links: `runUrl`, a deep link to the run's detail page in the Agentiqa web app (rendered in the step-summary table's Run details column) — **viewable only by a signed-in project/org member**; and `videoUrl`, the engine's session recording — a **public, durable link** anyone with the URL can open (safe to embed, but treat it as public; surfaced in the JSON envelope and on the run detail page, not in the summary table).
+On **cloud** runs each passing/failing plan may additionally carry two links: `runUrl`, a deep link to the run's detail page in the Agentiqa web app (rendered in the step-summary table's Details column) — **viewable only by a signed-in project/org member**; and `videoUrl`, the engine's session recording — a **public, durable link** anyone with the URL can open (safe to embed, but treat it as public; surfaced in the JSON envelope and on the run detail page, not in the summary table).
 
 ---
 
