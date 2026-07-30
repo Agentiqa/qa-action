@@ -185,10 +185,12 @@ The envelope schema (`schemaVersion:1`) — one JSON object on stdout, all logs 
 
 ```jsonc
 // success
-{ "ok": true, "schemaVersion": 1, "outcome": "passed", "plans": [ { "title": "...", "outcome": "passed", "durationSec": 42, "exitCode": 0 } ] }
+{ "ok": true, "schemaVersion": 1, "outcome": "passed", "batchUrl": "https://web.agentiqa.com/projects/proj_.../batch-runs/batch_...", "plans": [ { "title": "...", "outcome": "passed", "durationSec": 42, "exitCode": 0 } ] }
 // failure
 { "ok": false, "schemaVersion": 1, "error": { "code": "run_error", "message": "..." } }
 ```
+
+The top-level **`batchUrl`** is the page for the whole invocation — every plan of this run, grouped, with per-run outcomes and reasons. The step summary renders it as a **View full results** link under the headline. It is present only for hosted runs that minted a batch record, omitted otherwise (additive, so `schemaVersion` stays `1`), and — like `runUrl` — viewable only by a signed-in project/org member.
 
 On **cloud** runs each passing/failing plan may additionally carry two links: `runUrl`, a deep link to the run's detail page in the Agentiqa web app (rendered in the step-summary table's Run details column) — **viewable only by a signed-in project/org member**; and `videoUrl`, the engine's session recording — a **public, durable link** anyone with the URL can open (safe to embed, but treat it as public; surfaced in the JSON envelope and on the run detail page, not in the summary table).
 
