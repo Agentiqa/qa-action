@@ -128,7 +128,7 @@ A few things worth internalizing:
 
 `cli-version: latest` (the default) always runs the newest published CLI — the right choice for **nightlies**, which should track current product behavior. The trade-off: a verdict can change between two runs purely because the CLI advanced, with nothing in your workflow changing. For **release-gating** workflows, pin an exact version instead — `cli-version: "1.1.32"` (or your chosen `1.1.x`) — so verdicts only change when you deliberately bump it.
 
-`latest` stays the default because attribution, not pinning, is the primary guard: the action records the CLI build that actually ran and surfaces it three ways — echoed in the job log, appended to the step-summary headline (`8 / 8 plans passed · CLI exit 0 · agentiqa v1.1.32`), and exposed as the `cli-resolved-version` output — so verdict drift across publishes is attributable instead of silent.
+`latest` stays the default because attribution, not pinning, is the primary guard: the action records the CLI build that actually ran and surfaces it three ways — echoed in the job log, appended to the step-summary stat line (`Agentiqa · 8 / 8 plans passed · outcome passed · v1.1.32`), and exposed as the `cli-resolved-version` output — so verdict drift across publishes is attributable instead of silent.
 
 ---
 
@@ -190,7 +190,7 @@ The envelope schema (`schemaVersion:1`) — one JSON object on stdout, all logs 
 { "ok": false, "schemaVersion": 1, "error": { "code": "run_error", "message": "..." } }
 ```
 
-The top-level **`batchUrl`** is the page for the whole invocation — every plan of this run, grouped, with per-run outcomes and reasons. The step summary renders it as a **View full results** link under the headline. It is present only for hosted runs that minted a batch record, omitted otherwise (additive, so `schemaVersion` stays `1`), and — like `runUrl` — viewable only by a signed-in project/org member.
+The top-level **`batchUrl`** is the page for the whole invocation — every plan of this run, grouped, with per-run outcomes and reasons. The step summary renders it as a **View full results** link under the stat line, noting it is available to every member of your Agentiqa org. It is present only for hosted runs that minted a batch record, omitted otherwise (additive, so `schemaVersion` stays `1`), and — like `runUrl` — viewable only by a signed-in project/org member.
 
 On **cloud** runs each passing/failing plan may additionally carry two links: `runUrl`, a deep link to the run's detail page in the Agentiqa web app (rendered in the step-summary table's Details column) — **viewable only by a signed-in project/org member**; and `videoUrl`, the engine's session recording — a **public, durable link** anyone with the URL can open (safe to embed, but treat it as public; surfaced in the JSON envelope and on the run detail page, not in the summary table).
 

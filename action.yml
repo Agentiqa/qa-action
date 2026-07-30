@@ -425,15 +425,18 @@ runs:
         SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
         emit() { printf '%s\n' "$1" >> "$SUMMARY"; }
 
-        emit "## Agentiqa QA — AI E2E Testing"
-        emit ""
+        # One compact brand+stat line instead of a heading: GitHub already
+        # titles this block "<job name> summary", so an H2 only repeated the
+        # attribution. CLI exit code is deliberately absent — it means nothing
+        # to a human reading the summary (annotations still carry it for CI
+        # debugging); `outcome` is the human word for how the invocation ended.
         ver_suffix=""
-        [ -n "${CLI_RESOLVED_VERSION:-}" ] && ver_suffix=" · agentiqa \`v${CLI_RESOLVED_VERSION}\`"
-        emit "**${PLANS_PASSED:-?} / ${PLANS_TOTAL:-?} plans passed** · outcome \`${OUTCOME:-unknown}\` · CLI exit \`${EXIT_CODE:-?}\`${ver_suffix}"
+        [ -n "${CLI_RESOLVED_VERSION:-}" ] && ver_suffix=" · \`v${CLI_RESOLVED_VERSION}\`"
+        emit "**Agentiqa** · **${PLANS_PASSED:-?} / ${PLANS_TOTAL:-?} plans passed** · outcome \`${OUTCOME:-unknown}\`${ver_suffix}"
 
         # Batch page link (the envelope's optional TOP-LEVEL `batchUrl`): one
         # click from the check to every run of this CI invocation, grouped on
-        # the hosted batch page. Emitted directly under the headline stat so it
+        # the hosted batch page. Emitted directly under the stat line so it
         # is reachable even when the table below is skipped. Present only when
         # the CLI minted a batch row against a hosted control plane; the same
         # http(s) guard as the per-plan Details cell keeps a malformed or
@@ -446,10 +449,12 @@ runs:
             'if (length==1 and (.[0]|type=="object")) then (.[0].batchUrl // "") else "" end' \
             "$JSON_PATH" 2>/dev/null | tr -d '\n\r')" || batch_url=""
         fi
+        batch_link_emitted=""
         case "$batch_url" in
           http://*|https://*)
             emit ""
-            emit "[View full results ↗](${batch_url})"
+            emit "[**View full results ↗**](${batch_url}) — all runs of this invocation with screenshots, video and step-by-step reasons. Available to every member of your Agentiqa org."
+            batch_link_emitted="1"
             ;;
         esac
         emit ""
@@ -518,9 +523,17 @@ runs:
           i=$((i + 1))
         done
 
+        # Artifact note: when the batch link is present it already offers the
+        # media online, so the artifact drops to a quiet one-liner; without a
+        # batch link (self-hosted / batch not minted) the artifact is the only
+        # media source and keeps the full sentence.
         if [ "${UPLOAD_ARTIFACTS:-}" = "true" ] && [ -n "${ARTIFACT_NAME:-}" ]; then
           emit ""
-          emit "_Screenshots, video and \`result.json\`: download the **${ARTIFACT_NAME}** artifact from this run._"
+          if [ -n "$batch_link_emitted" ]; then
+            emit "<sub>Offline copy: \`result.json\` + media in artifact **${ARTIFACT_NAME}**.</sub>"
+          else
+            emit "_Screenshots, video and \`result.json\`: download the **${ARTIFACT_NAME}** artifact from this run._"
+          fi
         fi
 
     - name: Gate on outcome
