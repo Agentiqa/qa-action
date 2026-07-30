@@ -107,10 +107,10 @@ inputs:
     default: ''
   share-links:
     description: >-
-      Mint an opt-in PUBLIC, revocable share link for each cloud run (passes
-      --share to the CLI) so reviewers can open a run from the step summary
-      without an Agentiqa login. The Run column links the share URL when present.
-      Default false (privacy-conservative). Cloud runtime only.
+      DEPRECATED no-op, accepted so existing workflows keep working. Public
+      share links were retired 2026-07 in favor of org-member team access: the
+      step summary's Run details column always links a cloud run's detail page, and
+      whoever opens it needs an Agentiqa login in the run owner's organization.
     required: false
     default: 'false'
   retention-days:
@@ -202,7 +202,6 @@ runs:
         RUN_MODE: ${{ inputs.mode }}
         ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
         INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
-        SHARE_LINKS: ${{ inputs.share-links }}
         DEFAULT_CLOUD_ENGINE_URL: 'https://engine.agentiqa.com'
       run: |
         set -uo pipefail
@@ -271,10 +270,9 @@ runs:
         if [ "$RUN_MODE" = "parallel" ]; then
           args+=(--mode parallel)
         fi
-        # Opt-in public share links (privacy-conservative default: off).
-        if [ "$SHARE_LINKS" = "true" ]; then
-          args+=(--share)
-        fi
+        # `share-links` is a retired no-op (#1803): public per-run links no
+        # longer exist, so nothing is forwarded to the CLI. The input stays
+        # declared so workflows that still set it don't fail validation.
 
         # Capture the RESOLVED CLI version for verdict attribution across
         # publishes: with a floating dist-tag (latest/staging) the same
@@ -401,9 +399,11 @@ runs:
 
     - name: Render step summary + annotations
       # Human-readable results in the Actions UI: a per-plan table (outcome,
-      # duration, engine video link, screenshot count) written to the job step
-      # summary, plus a ::error annotation per failed plan so failures surface
-      # in the run UI and PR checks — no log-digging or artifact download needed.
+      # run deep link, failure reason) written to the
+      # job step summary, plus a ::error annotation per failed plan so failures
+      # surface in the run UI and PR checks — no log-digging or artifact download
+      # needed. The Reason column carries the short cause on the failing row
+      # itself, so there is no separate failures list below the table.
       # Reads only the schemaVersion:1 envelope; no secret is ever referenced.
       if: ${{ always() }}
       shell: bash
@@ -418,6 +418,10 @@ runs:
         CLI_RESOLVED_VERSION: ${{ steps.run.outputs.cli-resolved-version }}
       run: |
         set -uo pipefail
+        # Character-based (not byte-based) ${var:0:180} truncation: container
+        # jobs often run with no locale set, where bash slices multibyte
+        # UTF-8 mid-sequence. C.UTF-8 ships with glibc >= 2.35 everywhere.
+        export LC_ALL=C.UTF-8 2>/dev/null || true
         SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
         emit() { printf '%s\n' "$1" >> "$SUMMARY"; }
 
@@ -449,43 +453,35 @@ runs:
           exit 0
         fi
 
-        emit "| Plan | Outcome | Duration | Video | Run |"
-        emit "| --- | --- | --- | --- | --- |"
+        emit "| Plan | Outcome | Run details | Reason |"
+        emit "| --- | --- | --- | --- |"
 
         n="$(jq -r -s '.[0].plans | length' "$JSON_PATH")"
         [[ "$n" =~ ^[0-9]+$ ]] || n=0
-        fail_lines=()
         i=0
         while [ "$i" -lt "$n" ]; do
           title="$(jq -r -s --argjson i "$i" '.[0].plans[$i].title // "(untitled)"' "$JSON_PATH")"
           pout="$(jq -r -s --argjson i "$i" '.[0].plans[$i].outcome // "?"' "$JSON_PATH")"
-          dur="$(jq -r -s --argjson i "$i" '.[0].plans[$i].durationSec // ""' "$JSON_PATH")"
-          vurl="$(jq -r -s --argjson i "$i" '.[0].plans[$i].videoUrl // ""' "$JSON_PATH")"
           rurl="$(jq -r -s --argjson i "$i" '.[0].plans[$i].runUrl // ""' "$JSON_PATH")"
-          surl="$(jq -r -s --argjson i "$i" '.[0].plans[$i].shareUrl // ""' "$JSON_PATH")"
           psum="$(jq -r -s --argjson i "$i" '.[0].plans[$i].summary // ""' "$JSON_PATH")"
 
           if [ "$pout" = "passed" ]; then icon="✅ passed"; else icon="❌ ${pout}"; fi
-          if [ -n "$dur" ]; then durcell="${dur}s"; else durcell="–"; fi
-          # Link only a public http(s) URL; never a local file path.
-          case "$vurl" in
-            http://*|https://*) vcell="[▶ video](${vurl})" ;;
-            *) vcell="–" ;;
-          esac
-          # Run column: prefer the opt-in PUBLIC share link (no login wall) when
-          # present (--share / share-links: true), else the authed run-detail
-          # deep link. Present for cloud runs only; "–" for embedded/self-hosted.
-          if [ -n "$surl" ]; then linkurl="$surl"; else linkurl="$rurl"; fi
-          case "$linkurl" in
-            http://*|https://*) rcell="[open ↗](${linkurl})" ;;
+          # Run details column: the run-detail deep link (video, steps, evidence
+          # live there), opened by org members of the run owner (team access,
+          # #1803 — public share links are gone). Link only a public http(s)
+          # URL — cloud runs only; "–" for embedded/self-hosted.
+          case "$rurl" in
+            http://*|https://*) rcell="[open ↗](${rurl})" ;;
             *) rcell="–" ;;
           esac
           safe_title="$(printf '%s' "$title" | sed 's/|/\\|/g')"
-          emit "| ${safe_title} | ${icon} | ${durcell} | ${vcell} | ${rcell} |"
 
-          # Per-plan ::error annotation + a COMPACT Failures entry (short reason
-          # + the run link) for anything not passed — the full context is one
-          # click away in the run, so no wall-of-text summary here.
+          # Reason column: the short failure cause on the row itself. Only for
+          # non-passed plans — passed rows show "–" so the table stays scannable.
+          # The ::error annotation below carries the UNTRUNCATED reason; the cell
+          # is capped at 180 chars because the full context is one click away in
+          # the run.
+          reason_cell="–"
           if [ "$pout" != "passed" ]; then
             reason="$psum"
             [ -z "$reason" ] && reason="Plan '${title}' outcome=${pout}"
@@ -493,18 +489,12 @@ runs:
             echo "::error title=Agentiqa plan failed: ${title}::${reason}"
             short="${reason:0:180}"
             [ "${#reason}" -gt 180 ] && short="${short}…"
-            link=""
-            case "$rurl" in http://*|https://*) link=" → [open run ↗](${rurl})" ;; esac
-            fail_lines+=("- **${title}** — ${short}${link}")
+            reason_cell="$(printf '%s' "$short" | sed 's/|/\\|/g')"
           fi
+
+          emit "| ${safe_title} | ${icon} | ${rcell} | ${reason_cell} |"
           i=$((i + 1))
         done
-
-        if [ "${#fail_lines[@]}" -gt 0 ]; then
-          emit ""
-          emit "### Failures"
-          for fl in "${fail_lines[@]}"; do emit "$fl"; done
-        fi
 
         if [ "${UPLOAD_ARTIFACTS:-}" = "true" ] && [ -n "${ARTIFACT_NAME:-}" ]; then
           emit ""
