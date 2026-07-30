@@ -430,6 +430,28 @@ runs:
         ver_suffix=""
         [ -n "${CLI_RESOLVED_VERSION:-}" ] && ver_suffix=" · agentiqa \`v${CLI_RESOLVED_VERSION}\`"
         emit "**${PLANS_PASSED:-?} / ${PLANS_TOTAL:-?} plans passed** · CLI exit \`${EXIT_CODE:-?}\`${ver_suffix}"
+
+        # Batch page link (the envelope's optional TOP-LEVEL `batchUrl`): one
+        # click from the check to every run of this CI invocation, grouped on
+        # the hosted batch page. Emitted directly under the headline stat so it
+        # is reachable even when the table below is skipped. Present only when
+        # the CLI minted a batch row against a hosted control plane; the same
+        # http(s) guard as the per-plan Run details cell keeps a malformed or
+        # self-hosted value out of the summary. Read defensively — a runner
+        # without jq or an unparseable envelope just omits the line, and the
+        # fuller guards below still emit their own explanation.
+        batch_url=""
+        if command -v jq >/dev/null 2>&1 && [ -n "${JSON_PATH:-}" ] && [ -s "${JSON_PATH:-}" ]; then
+          batch_url="$(jq -r -s \
+            'if (length==1 and (.[0]|type=="object")) then (.[0].batchUrl // "") else "" end' \
+            "$JSON_PATH" 2>/dev/null | tr -d '\n\r')" || batch_url=""
+        fi
+        case "$batch_url" in
+          http://*|https://*)
+            emit ""
+            emit "[View full results ↗](${batch_url})"
+            ;;
+        esac
         emit ""
 
         if ! command -v jq >/dev/null 2>&1; then
