@@ -188,7 +188,15 @@ runs:
         # Auth + control-plane. AGENTIQA_SERVICE_KEY alone authenticates the
         # hosted engine (a short-lived credential is minted automatically).
         AGENTIQA_SERVICE_KEY: ${{ inputs.service-key }}
-        AGENTIQA_API_URL: ${{ inputs.api-url }}
+        # Exported to AGENTIQA_API_URL only when non-empty (same pattern as
+        # gemini-api-key below). `api-url` defaults to '', and exporting that
+        # empty value made AGENTIQA_API_URL *set-but-empty* in the CLI's
+        # environment — every consumer that reads it with `||` shrugged it off,
+        # but the batch-mint read used `??`, which treats '' as a real value, so
+        # the PUT targeted a relative URL and silently unbatched the whole run.
+        # The CLI read is fixed too; this keeps the Action from ever handing it
+        # (or a job-level AGENTIQA_API_URL) an empty override again.
+        INPUT_API_URL: ${{ inputs.api-url }}
         # Exported to GEMINI_API_KEY only when non-empty, so a job-level
         # GEMINI_API_KEY env var is not clobbered by an empty input.
         INPUT_GEMINI_API_KEY: ${{ inputs.gemini-api-key }}
@@ -225,6 +233,13 @@ runs:
 
         if [ -z "${AGENTIQA_SERVICE_KEY:-}" ]; then
           fail_config "service-key input is empty. Pass an Agentiqa CLI service key (sk_...) from a repository secret."
+        fi
+
+        # Only a non-empty api-url overrides the control plane. Unset stays
+        # unset, so the CLI applies its own production default and a job-level
+        # AGENTIQA_API_URL survives.
+        if [ -n "$INPUT_API_URL" ]; then
+          export AGENTIQA_API_URL="$INPUT_API_URL"
         fi
 
         case "$RUNTIME" in
