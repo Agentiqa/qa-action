@@ -31,8 +31,8 @@ inputs:
   api-url:
     description: >-
       Override the Agentiqa control-plane API URL (AGENTIQA_API_URL). Leave
-      empty to use production (https://agentiqa.com). Set to https://s.agentiqa.com
-      to target staging.
+      empty to use production (https://agentiqa.com), or set the URL of your
+      own Agentiqa control plane.
     required: false
     default: ''
   runtime:
@@ -46,8 +46,7 @@ inputs:
     description: >-
       Optional hosted-engine URL override; only meaningful with `runtime: cloud`.
       Leave empty for the default Agentiqa cloud engine
-      (https://engine.agentiqa.com). Set https://s-engine.agentiqa.com for
-      staging, or the URL of your own hosted engine.
+      (https://engine.agentiqa.com), or set the URL of your own hosted engine.
     required: false
     default: ''
   gemini-api-key:
@@ -557,6 +556,7 @@ runs:
         OUTCOME: ${{ steps.run.outputs.outcome }}
         EXIT_CODE: ${{ steps.run.outputs.exit-code }}
         FAIL_ON: ${{ inputs.fail-on }}
+        JSON_PATH: ${{ steps.run.outputs.json-path }}
       run: |
         set -euo pipefail
 
@@ -594,7 +594,32 @@ runs:
               echo "::warning::Config/usage error (cli exit ${EXIT_CODE}), but fail-on=never — not failing the job."
               exit 0
             fi
-            echo "::error::Config/usage error (cli exit ${EXIT_CODE}) — permanent; fix the workflow inputs, service key, or plan selectors."
+            # An account / plan-limit block is exit 2 too, but no workflow edit
+            # can clear it. The CLI keeps the server's quota reason as the
+            # failure envelope's error.code, so name the real fix instead of
+            # pointing at the workflow inputs. Read defensively: a missing jq or
+            # an invalid envelope falls back to the generic message. The CLI's
+            # own error.message is already in the "Agentiqa run error"
+            # annotation from the summary step, so it is not repeated here.
+            err_code=""
+            if command -v jq >/dev/null 2>&1 && [ -n "${JSON_PATH:-}" ] && [ -s "${JSON_PATH:-}" ] \
+               && jq -e -s 'length==1 and (.[0]|type=="object") and .[0].ok==false' "$JSON_PATH" >/dev/null 2>&1; then
+              err_code="$(jq -r -s '.[0].error.code // ""' "$JSON_PATH" 2>/dev/null | tr -d '\n\r')" || err_code=""
+            fi
+            case "$err_code" in
+              org_cap_exhausted)
+                echo "::error::Your organization's Agentiqa run credits are used up or have expired (org_cap_exhausted, cli exit ${EXIT_CODE}). This is account state, not a workflow problem: re-running the job or changing its inputs won't help. Contact Agentiqa support to renew the credits. (If the run error above says to ask your organization admin to raise the limit, that is older CLI wording: organization credits are renewed by Agentiqa, not by an admin.)"
+                ;;
+              credits_exhausted)
+                echo "::error::This account's included Agentiqa usage and credit balance are used up (credits_exhausted, cli exit ${EXIT_CODE}). This is account state, not a workflow problem: re-running the job won't help. Upgrade the plan (or buy credits where your plan offers them) from the limit dialog in the Agentiqa web app, or wait for the next monthly window."
+                ;;
+              trial_limit|overage_required|overage_cap_reached|no_managed_entitlement|revoked)
+                echo "::error::Agentiqa account or plan limit (${err_code}, cli exit ${EXIT_CODE}) — account state, not a workflow problem; re-running the job won't help. The \"Agentiqa run error\" annotation has the details."
+                ;;
+              *)
+                echo "::error::Config/usage error (cli exit ${EXIT_CODE}) — permanent; fix the workflow inputs, service key, or plan selectors."
+                ;;
+            esac
             exit 1
             ;;
           infra-error)
