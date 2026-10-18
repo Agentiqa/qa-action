@@ -13,7 +13,7 @@
 # This file is a published mirror of the action maintained in the Agentiqa
 # monorepo; open an issue on this repo for questions or fixes.
 name: 'Agentiqa — End-to-End Agentic QA in CI'
-description: 'E2E tests written in plain English, run against your live app. Results, videos and run links right in your workflow.'
+description: 'Quality gates for your app and its AI agents: run your saved Agentiqa test plans against your live app, with results, videos and run links in your workflow.'
 author: 'Agentiqa, Inc.'
 
 branding:
