@@ -10,10 +10,15 @@
 # stderr. See README.md for the envelope schema, the inputs/outputs, and the
 # exit-code / fail-on gating contract.
 #
+# Optional QA review (`review: true`): after the run, the same job runs
+#   npx agentiqa@<cli-version> review --batch <batch-run-id> --head <deployed-sha> [--since <sha>] --json
+# against the caller's checkout (full history). Advisory only: it never changes
+# the run outcome or the gate.
+#
 # This file is a published mirror of the action maintained in the Agentiqa
 # monorepo; open an issue on this repo for questions or fixes.
 name: 'Agentiqa — End-to-End Agentic QA in CI'
-description: 'E2E tests written in plain English, run against your live app. Results, videos and run links right in your workflow.'
+description: 'Release gates for your app and its AI agents: run your saved Agentiqa test plans against your live app, with results, videos and run links in your workflow.'
 author: 'Agentiqa, Inc.'
 
 branding:
@@ -81,13 +86,15 @@ inputs:
     description: >-
       Exit-code gating policy. One of:
         never         - never fail the job on the run outcome (report-only; read outputs downstream).
-        plan-failure  - (default) fail when a plan failed (exit 1) OR on a config/usage error
-                        (exit 2 — permanent, must fail loudly). Only retryable infra errors
-                        (exit 3) are swallowed, surfacing as outcome=infra-error for a
-                        digest/reporter to handle. Exit 3 also covers a NO-VERDICT batch —
-                        one whose only non-passing plans could not reach a verdict (a
-                        persistent engine disconnect, or the blocked cascade of one) — so a
-                        transient WS drop no longer reads as a red plan-failure. Read the
+        plan-failure  - (default) fail when a plan failed (exit 1), on a config/usage error
+                        (exit 2 — permanent, must fail loudly), OR when a plan needs review
+                        (outcome=needs-review: no step failed, but some step needs a person to
+                        look at it before the run counts as passed — never a pass). Only
+                        retryable infra errors (exit 3) are swallowed, surfacing as
+                        outcome=infra-error for a digest/reporter to handle. Exit 3 also covers a
+                        NO-VERDICT batch — one whose only non-passing plans could not reach a
+                        verdict (a persistent engine disconnect, or the blocked cascade of one) —
+                        so a transient WS drop no longer reads as a red plan-failure. Read the
                         `outcome` step output to gate more strictly (fail-on: any).
         any           - fail on any nonzero exit. Use for release gates.
     required: false
@@ -119,13 +126,60 @@ inputs:
       cap still bounds it.
     required: false
     default: '14'
+  review:
+    description: >-
+      true to have QA Manager review this run's batch after the run (default
+      false). The review reads what changed in your repository since the last
+      review and what this run saw, and leaves suggestions for a person to
+      approve in Agentiqa: Update test?, Possible bug, Add test?. It runs after
+      a red run too, and it never changes the run outcome or whether this job
+      fails. It needs deployed-sha and a full-history checkout of your app's
+      repository earlier in the job (actions/checkout with fetch-depth: 0), and
+      the job's permissions should list both contents: read and pull-requests:
+      read (a permissions block sets every scope it does not list to none, and
+      the checkout needs contents: read). It runs on Agentiqa's managed model
+      access, with the same service key.
+    required: false
+    default: 'false'
+  deployed-sha:
+    description: >-
+      With review: true (required): the commit of your app that this run
+      tested, i.e. the one deployed at the URL the plans ran against. A full or
+      short sha, or a tag, present in the checkout. Not necessarily github.sha:
+      a scheduled workflow runs on the tip of the default branch, which may not
+      be what is deployed.
+    required: false
+    default: ''
+  review-since:
+    description: >-
+      With review: true: the commit to start from for any plan that has no
+      starting point of its own: a plan no review covered yet (every plan on
+      the first review, and plans added later), and also a plan whose runs
+      never reach a verdict. Without it such a plan stops the review
+      (no_base). The review reads one set of changes for all plans, from the
+      oldest starting point, so while any plan starts here the whole review
+      reads everything since this commit. Keep it recent and move it forward,
+      for example your latest release tag, not a fixed old one. A full or short
+      sha, or a tag, present in the checkout.
+    required: false
+    default: ''
+  review-dry-run:
+    description: >-
+      With review: true: true runs the review without saving anything (the
+      CLI's --dry-run). The job summary and the review JSON show the cards it
+      would leave; nothing reaches your Agentiqa project and no starting point
+      moves forward. Use it for the first nights, then set it back to false.
+    required: false
+    default: 'false'
 
 outputs:
   outcome:
     description: >-
-      Run outcome bucket: passed | plan-failure | config-error | infra-error.
-      Note: exit 0 with zero executed plans buckets as config-error (a run
-      that tests nothing is not a pass).
+      Run outcome bucket: passed | plan-failure | needs-review | config-error |
+      infra-error. needs-review: no plan failed, and at least one plan has steps
+      that need a person's review (CLI exit 3, envelope outcome needs-review) —
+      not a pass, and not an infra error. Note: exit 0 with zero executed plans
+      buckets as config-error (a run that tests nothing is not a pass).
     value: ${{ steps.run.outputs.outcome }}
   json-path:
     description: 'Path to the captured JSON result envelope (schemaVersion:1). Empty if the run was not attempted.'
@@ -152,6 +206,21 @@ outputs:
       attributable when cli-version is a floating dist-tag (latest/staging).
       Empty if capture failed or the run was not attempted.
     value: ${{ steps.run.outputs.cli-resolved-version }}
+  batch-run-id:
+    description: >-
+      Id of the batch this run recorded (batch_...), the envelope's top-level
+      batchRunId: what `agentiqa review --batch` takes. Empty when the run
+      recorded no batch.
+    value: ${{ steps.run.outputs.batch-run-id }}
+  review-exit-code:
+    description: >-
+      Exit code of the QA review: 0 finished / 2 could not run (setup,
+      permission or account limit; retrying will not help) / 3 did not finish
+      (transient). Empty when review is off. Never changes outcome or the gate.
+    value: ${{ steps.review.outputs.review-exit-code }}
+  review-json-path:
+    description: 'Path to the QA review JSON envelope (schemaVersion:1). Empty when the review did not run.'
+    value: ${{ steps.review.outputs.review-json-path }}
 
 runs:
   using: 'composite'
@@ -226,6 +295,7 @@ runs:
             echo "plans-passed="
             echo "plans-failed="
             echo "cli-resolved-version="
+            echo "batch-run-id="
           } >> "$GITHUB_OUTPUT"
           exit 0
         }
@@ -360,6 +430,25 @@ runs:
         [[ "$plans_passed" =~ ^[0-9]+$ ]] || plans_passed=""
         [[ "$plans_failed" =~ ^[0-9]+$ ]] || plans_failed=""
 
+        # Exit 3 is also how the CLI reports a batch whose plans need REVIEW: no plan failed,
+        # but some step needs a person to look at it before the run counts as passed (the
+        # envelope's top-level outcome is `needs-review`). That is a verdict, not a retryable
+        # infra error, and never a pass: bucket it on its own so the gate can fail on it.
+        # Without jq, or with polluted stdout (envelope_valid empty), the label is read from
+        # the raw text instead: the CLI writes the top-level label only as `"outcome":
+        # "needs-review"` (a per-plan outcome is `needs_review`, and an escaped copy inside a
+        # string cannot match `"outcome"`). Skipping that read would bucket the batch as
+        # infra-error and let the default policy pass it — amber folded into a CI pass.
+        if [ "$cli_exit_code" = "3" ]; then
+          if [ "$envelope_valid" = "yes" ]; then
+            if [ "$(jq -r -s '.[0].outcome // ""' "$JSON_PATH")" = "needs-review" ]; then
+              outcome="needs-review"
+            fi
+          elif [ -s "$JSON_PATH" ] && grep -Eq '"outcome"[[:space:]]*:[[:space:]]*"needs-review"' "$JSON_PATH"; then
+            outcome="needs-review"
+          fi
+        fi
+
         # Exit 0 is only a pass when backed by a valid envelope: exactly one
         # JSON object with ok:true and a plans array. Missing stdout, polluted
         # stdout, ok:false, or a missing plans key would otherwise be a false
@@ -375,6 +464,20 @@ runs:
             outcome="config-error"
           fi
         fi
+
+        # The batch this invocation recorded (the envelope's TOP-LEVEL
+        # `batchRunId`, omitted when no batch was minted): the handoff to
+        # `agentiqa review --batch`. Without jq, or with polluted stdout, it is
+        # read from the raw text the same way as needs-review above: the CLI
+        # writes it only at the top level, and an escaped copy inside a string
+        # cannot match `"batchRunId"`. Anything but a plain id is dropped.
+        batch_run_id=""
+        if [ "$envelope_valid" = "yes" ]; then
+          batch_run_id="$(jq -r -s '.[0].batchRunId // "" | strings' "$JSON_PATH" 2>/dev/null | tr -d '\n\r')" || batch_run_id=""
+        elif [ -s "$JSON_PATH" ]; then
+          batch_run_id="$(grep -Eo '"batchRunId"[[:space:]]*:[[:space:]]*"[A-Za-z0-9_-]+"' "$JSON_PATH" | head -n1 | sed -E 's/.*"([A-Za-z0-9_-]+)"$/\1/')" || batch_run_id=""
+        fi
+        [[ "$batch_run_id" =~ ^[A-Za-z0-9_-]{1,128}$ ]] || batch_run_id=""
 
         # GITHUB_OUTPUT is line-based: never write an unvalidated multiline
         # value there (a stray newline would inject bogus keys / corrupt the
@@ -395,21 +498,13 @@ runs:
         emit_output "plans-passed" "$plans_passed"
         emit_output "plans-failed" "$plans_failed"
         emit_output "cli-resolved-version" "$CLI_RESOLVED_VERSION"
+        emit_output "batch-run-id" "$batch_run_id"
 
         echo "Agentiqa run outcome=${outcome} (cli exit ${cli_exit_code}); plans total=${plans_total:-?} passed=${plans_passed:-?} failed=${plans_failed:-?}; agentiqa=${CLI_RESOLVED_VERSION:-unknown}"
 
         # This step never fails on the CLI outcome — the Gate step below owns
         # policy so that artifact upload always runs first.
         exit 0
-
-    - name: Upload Agentiqa artifacts
-      if: ${{ always() && inputs.upload-artifacts == 'true' }}
-      uses: actions/upload-artifact@v7
-      with:
-        name: ${{ steps.run.outputs.artifact-name || 'agentiqa-artifacts' }}
-        path: ${{ inputs.artifacts-dir }}
-        if-no-files-found: warn
-        retention-days: ${{ steps.retention.outputs.days }}
 
     - name: Render step summary + annotations
       # Human-readable results in the Actions UI: a per-plan table (outcome,
@@ -506,7 +601,12 @@ runs:
           rurl="$(jq -r -s --argjson i "$i" '.[0].plans[$i].runUrl // ""' "$JSON_PATH")"
           psum="$(jq -r -s --argjson i "$i" '.[0].plans[$i].summary // ""' "$JSON_PATH")"
 
-          if [ "$pout" = "passed" ]; then icon="✅&nbsp;passed"; else icon="❌&nbsp;${pout}"; fi
+          # A plan that needs review did not fail: warning tone, never the failed mark.
+          case "$pout" in
+            passed) icon="✅&nbsp;passed" ;;
+            needs_review) icon="⚠️&nbsp;needs&nbsp;review" ;;
+            *) icon="❌&nbsp;${pout}" ;;
+          esac
           # Details column: the run-detail deep link (video, steps, evidence
           # live there), opened by org members of the run owner (team access,
           # #1803 — public share links are gone). Link only a public http(s)
@@ -527,7 +627,11 @@ runs:
             reason="$psum"
             [ -z "$reason" ] && reason="Plan '${title}' outcome=${pout}"
             reason="$(printf '%s' "$reason" | tr '\n\r' '  ')"
-            echo "::error title=Agentiqa plan failed: ${title}::${reason}"
+            if [ "$pout" = "needs_review" ]; then
+              echo "::warning title=Agentiqa plan needs review: ${title}::${reason}"
+            else
+              echo "::error title=Agentiqa plan failed: ${title}::${reason}"
+            fi
             short="${reason:0:180}"
             [ "${#reason}" -gt 180 ] && short="${short}…"
             reason_cell="$(printf '%s' "$short" | sed 's/|/\\|/g')"
@@ -549,6 +653,169 @@ runs:
             emit "_Screenshots, video and \`result.json\`: download the **${ARTIFACT_NAME}** artifact from this run._"
           fi
         fi
+
+    - name: Review the batch (QA Manager)
+      # Optional (`review: true`). QA Manager reviews AFTER the run: what
+      # changed in the caller's checkout between the last reviewed commit and
+      # `deployed-sha`, plus what this batch saw, and leaves suggestions a
+      # person approves in Agentiqa. Advisory: this step always exits 0 and
+      # never touches the run outcome or the gate below; its result is the
+      # review-* outputs and a section of the job summary. It runs after a red
+      # run too; `!cancelled()` keeps a cancelled job from starting a review.
+      # Placed before the upload so the review files ship in the artifact.
+      id: review
+      if: ${{ !cancelled() && inputs.review == 'true' }}
+      shell: bash
+      env:
+        AGENTIQA_SERVICE_KEY: ${{ inputs.service-key }}
+        INPUT_API_URL: ${{ inputs.api-url }}
+        # Read-only use: the pull requests behind the reviewed commits (the
+        # caller's job grants `pull-requests: read`).
+        GITHUB_TOKEN: ${{ github.token }}
+        CLI_VERSION: ${{ inputs.cli-version }}
+        BATCH_RUN_ID: ${{ steps.run.outputs.batch-run-id }}
+        DEPLOYED_SHA: ${{ inputs.deployed-sha }}
+        REVIEW_SINCE: ${{ inputs.review-since }}
+        REVIEW_DRY_RUN: ${{ inputs.review-dry-run }}
+        ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
+      run: |
+        # No errexit (`shell: bash` starts with -e): a review that exits
+        # nonzero is reported below, and every path ends in finish(), exit 0.
+        set +e
+        set -uo pipefail
+        SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+        # The review's model calls run on Agentiqa's managed access for the
+        # service key's account. The CLI prefers GEMINI_API_KEY when it is set,
+        # so a job-level value would move the review onto the caller's key:
+        # it never reaches the review.
+        unset GEMINI_API_KEY
+
+        # Same rule as the run step: only a non-empty api-url overrides.
+        if [ -n "$INPUT_API_URL" ]; then
+          export AGENTIQA_API_URL="$INPUT_API_URL"
+        fi
+
+        # Outputs, then end the step: the review never fails the job.
+        finish() {
+          echo "review-exit-code=$1" >> "$GITHUB_OUTPUT"
+          echo "review-json-path=$2" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+        # A review that could not start: one warning, one summary line, and
+        # exit code 2 (the CLI's code for a setup problem a retry cannot fix).
+        not_started() {
+          echo "::warning title=Agentiqa QA review::The review did not run: $1"
+          printf '\n> **QA review did not run:** %s\n' "$1" >> "$SUMMARY"
+          finish 2 ""
+        }
+        # An input value as a message may quote it: one line, bounded.
+        shown() { printf '%s' "$1" | tr -d '\n\r' | cut -c1-80; }
+        # A full or short sha, a tag or a ref -> the full commit sha the CLI
+        # takes; empty when this checkout does not have it. A leading dash
+        # (an option to git) or whitespace is never a commit.
+        commit_of() {
+          case "$1" in
+            -*|*[[:space:]]*) return 0 ;;
+          esac
+          git rev-parse --verify --quiet "$1^{commit}" 2>/dev/null || true
+        }
+
+        if [ -z "${AGENTIQA_SERVICE_KEY:-}" ]; then
+          not_started "service-key is empty."
+        fi
+        if [[ ! "$BATCH_RUN_ID" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
+          not_started "the run recorded no batch to review (batch-run-id is empty). See the run step above."
+        fi
+        if [ -z "$DEPLOYED_SHA" ]; then
+          not_started "review: true needs deployed-sha, the commit of your app this run tested."
+        fi
+        if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          not_started "the workspace is not a git checkout. Check out your app's repository (actions/checkout with fetch-depth: 0) before this action."
+        fi
+        if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+          echo "::warning title=Agentiqa QA review::This checkout is shallow. The review reads the history between the last reviewed commit and deployed-sha: use actions/checkout with fetch-depth: 0."
+        fi
+
+        HEAD_SHA="$(commit_of "$DEPLOYED_SHA")"
+        if [ -z "$HEAD_SHA" ]; then
+          not_started "deployed-sha '$(shown "$DEPLOYED_SHA")' is not a commit in this checkout. Check out the repository your app is deployed from, with full history (fetch-depth: 0)."
+        fi
+        SINCE_SHA=""
+        if [ -n "$REVIEW_SINCE" ]; then
+          SINCE_SHA="$(commit_of "$REVIEW_SINCE")"
+          if [ -z "$SINCE_SHA" ]; then
+            not_started "review-since '$(shown "$REVIEW_SINCE")' is not a commit in this checkout (fetch-depth: 0)."
+          fi
+        fi
+
+        mkdir -p "$ARTIFACTS_DIR"
+        ARTIFACTS_ABS="$(cd "$ARTIFACTS_DIR" && pwd)"
+        REVIEW_JSON="$ARTIFACTS_ABS/agentiqa-review.json"
+        REVIEW_MD="$ARTIFACTS_ABS/agentiqa-review-summary.md"
+        rm -f "$REVIEW_MD"
+
+        rargs=(review --batch "$BATCH_RUN_ID" --head "$HEAD_SHA" --summary "$REVIEW_MD" --json)
+        if [ -n "$SINCE_SHA" ]; then
+          rargs+=(--since "$SINCE_SHA")
+        fi
+        # review-dry-run: the cards it would leave, nothing saved (shadow nights).
+        dry_note=""
+        if [ "${REVIEW_DRY_RUN:-}" = "true" ]; then
+          rargs+=(--dry-run)
+          dry_note=" (dry run: nothing was saved)"
+        fi
+
+        echo "Running: npx -y agentiqa@${CLI_VERSION} ${rargs[*]}"
+        # --json => one envelope on stdout (kept as a file), logs on stderr.
+        npx -y "agentiqa@${CLI_VERSION}" "${rargs[@]}" > "$REVIEW_JSON"
+        review_exit="$?"
+
+        if [ "$review_exit" = "0" ]; then
+          echo "Agentiqa QA review finished${dry_note}. Envelope: ${REVIEW_JSON}"
+          # The review's own job-summary section (its cards, with links), under the run table.
+          if [ -s "$REVIEW_MD" ]; then
+            { echo ""; cat "$REVIEW_MD"; echo ""; } >> "$SUMMARY"
+          fi
+          finish 0 "$REVIEW_JSON"
+        fi
+
+        # Not finished: name the failure envelope's code and message (read
+        # defensively: without jq or a valid envelope, the log has the detail).
+        err_code=""
+        err_msg=""
+        if command -v jq >/dev/null 2>&1 && [ -s "$REVIEW_JSON" ] \
+           && jq -e -s 'length==1 and (.[0]|type=="object") and .[0].ok==false' "$REVIEW_JSON" >/dev/null 2>&1; then
+          err_code="$(jq -r -s '.[0].error.code // ""' "$REVIEW_JSON" 2>/dev/null | tr -d '\n\r')" || err_code=""
+          err_msg="$(jq -r -s '.[0].error.message // ""' "$REVIEW_JSON" 2>/dev/null | tr '\n\r' '  ' | cut -c1-500)" || err_msg=""
+        fi
+        case "$review_exit" in
+          2) what="could not run (exit 2)"; why=" A setup, permission or account problem: a retry will not fix it." ;;
+          3) what="did not finish (exit 3)"; why=" A transient failure: safe to retry." ;;
+          *) what="ended with exit ${review_exit}"; why="" ;;
+        esac
+        hint=""
+        case "$err_code" in
+          no_base) hint=" Set review-since to the commit where plans that no review covered yet start (every plan on the first review)." ;;
+          head_missing) hint=" Check out the repository your app is deployed from with fetch-depth: 0." ;;
+        esac
+        detail="${err_code:+${err_code}: }${err_msg}"
+        [ -n "$detail" ] || detail="See the step log."
+        echo "::warning title=Agentiqa QA review::The review ${what}. ${detail}${hint}${why}"
+        printf '\n> **QA review %s.** %s%s%s\n' "$what" "$(printf '%s' "$detail" | sed 's/|/\\|/g')" "$hint" "$why" >> "$SUMMARY"
+        if [ -s "$REVIEW_JSON" ]; then
+          finish "$review_exit" "$REVIEW_JSON"
+        fi
+        finish "$review_exit" ""
+
+    - name: Upload Agentiqa artifacts
+      if: ${{ always() && inputs.upload-artifacts == 'true' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ steps.run.outputs.artifact-name || 'agentiqa-artifacts' }}
+        path: ${{ inputs.artifacts-dir }}
+        if-no-files-found: warn
+        retention-days: ${{ steps.retention.outputs.days }}
 
     - name: Gate on outcome
       shell: bash
@@ -572,8 +839,9 @@ runs:
 
         # Policy matrix:
         #   never        -> report-only, never fails.
-        #   plan-failure -> fails on plan-failure AND config-error (permanent
-        #                   problems must fail loudly); swallows ONLY the
+        #   plan-failure -> fails on plan-failure, needs-review AND config-error
+        #                   (permanent problems must fail loudly, and a run that
+        #                   needs review is not a pass); swallows ONLY the
         #                   retryable infra-error bucket (exit 3).
         #   any          -> fails on any nonzero outcome.
         case "$OUTCOME" in
@@ -587,6 +855,14 @@ runs:
               exit 0
             fi
             echo "::error::A plan failed (cli exit ${EXIT_CODE})."
+            exit 1
+            ;;
+          needs-review)
+            if [ "$FAIL_ON" = "never" ]; then
+              echo "::warning::A plan needs review (cli exit ${EXIT_CODE}), but fail-on=never — not failing the job."
+              exit 0
+            fi
+            echo "::error::A plan needs review (cli exit ${EXIT_CODE}): no step failed, but some step needs a person to look at it before the run counts as passed. Open the run to review it."
             exit 1
             ;;
           config-error)

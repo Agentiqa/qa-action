@@ -76,12 +76,16 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `artifact-name`    | no                          | `''` → `agentiqa-artifacts-<run>` | Name for the uploaded artifact. Defaults to `agentiqa-artifacts-<run_id>-<attempt>` when empty.             |
 | `share-links`      | no                          | `false`                           | **Deprecated no-op**, accepted so existing workflows keep working. Public share links were retired in favor of org-member team access: the step summary's Details column always links a cloud run's detail page (Agentiqa login in the run owner's org required). |
 | `retention-days`   | no                          | `14`                              | Retention (days) for the uploaded artifact. Applies when `upload-artifacts: true`; the repo/org artifact-retention cap still bounds it. |
+| `review`           | no                          | `false`                           | `true`: QA Manager reviews the batch after the run (see [QA review after the run](#qa-review-after-the-run)). Never changes the outcome or the gate. |
+| `deployed-sha`     | with `review: true`         | `''`                              | The commit of the app this run tested (deployed where the plans ran); full/short sha or tag in the checkout. |
+| `review-since`     | no                          | `''`                              | Where plans without a starting point start (`--since`); needed on the first review. Keep it recent: it widens the whole review. |
+| `review-dry-run`   | no                          | `false`                           | `true`: the review saves nothing (`--dry-run`); for the first nights. |
 
 ## Outputs
 
 | Output                 | Example                                                    | Description                                                                                                                                                              |
 | ---------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `outcome`              | `passed` / `plan-failure` / `config-error` / `infra-error` | Outcome bucket used for gating. Exit 0 with zero executed plans buckets as `config-error`.                                                                              |
+| `outcome`              | `passed` / `plan-failure` / `needs-review` / `config-error` / `infra-error` | Outcome bucket used for gating. Exit 0 with zero executed plans buckets as `config-error`.                                                                              |
 | `json-path`            | `.../agentiqa-artifacts/agentiqa-result.json`              | Path to the JSON envelope (`schemaVersion:1`); empty if the run was not attempted.                                                                                      |
 | `exit-code`            | `0` / `1` / `2` / `3`                                      | Raw CLI process exit code.                                                                                                                                              |
 | `plans-total`          | `4`                                                        | Plans reported in the envelope.                                                                                                                                         |
@@ -89,6 +93,9 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `plans-failed`         | `1`                                                        | Plans with `outcome != passed`.                                                                                                                                         |
 | `artifact-name`        | `agentiqa-artifacts-123-1`                                 | Resolved artifact name used for the upload.                                                                                                                             |
 | `cli-resolved-version` | `1.1.32`                                                   | CLI version actually executed, resolved from `agentiqa --version` at run time (see [Reproducibility](#reproducibility-and-version-attribution)). Empty if capture failed. |
+| `batch-run-id`         | `batch_…`                                                  | The batch the run recorded (the envelope's top-level `batchRunId`); empty when none. |
+| `review-exit-code`     | `0` / `2` / `3`                                            | QA review exit code: finished / could not run (no retry helps) / transient. Empty when `review` is off. |
+| `review-json-path`     | `.../agentiqa-artifacts/agentiqa-review.json`              | The review's JSON envelope; empty when the review did not run. |
 
 ---
 
@@ -104,14 +111,15 @@ The CLI exits per a fixed contract: `0` pass, `1` plan failure, `2` usage/config
 | `1`                              | `plan-failure` | A plan failed / errored during the run.                                                                                                                   |
 | `2` (or unknown)                 | `config-error` | Usage/config error, or an account / plan-limit block (e.g. `org_cap_exhausted`) — permanent until a human fixes it.                                       |
 | `3`                              | `infra-error`  | Retryable infra/runtime error (engine unreachable, auth/exchange failure, a lost engine connection) — **or** a no-verdict batch (see below).              |
+| `3` with envelope `outcome: needs-review` | `needs-review` | No plan failed, but at least one plan has steps that need a person's review before the run counts as passed (see below). Not a pass, and not an infra error. |
 
 `fail-on` decides which outcomes fail the job:
 
-| `fail-on`                | `plan-failure` | `config-error` | `infra-error` | Use for                                                                          |
-| ------------------------ | -------------- | -------------- | ------------- | -------------------------------------------------------------------------------- |
-| `never`                  | no             | no             | no            | Report-only (a digest reads `outcome`).                                          |
-| `plan-failure` (default) | **yes**        | **yes**        | no            | Nightly — real failures and misconfig fail loudly; retryable infra is swallowed. |
-| `any`                    | **yes**        | **yes**        | **yes**       | Release gate — block on anything nonzero.                                        |
+| `fail-on`                | `plan-failure` | `needs-review` | `config-error` | `infra-error` | Use for                                                                          |
+| ------------------------ | -------------- | -------------- | -------------- | ------------- | -------------------------------------------------------------------------------- |
+| `never`                  | no             | no             | no             | no            | Report-only (a digest reads `outcome`).                                          |
+| `plan-failure` (default) | **yes**        | **yes**        | **yes**        | no            | Nightly — real failures and misconfig fail loudly; retryable infra is swallowed. |
+| `any`                    | **yes**        | **yes**        | **yes**        | **yes**       | Release gate — block on anything nonzero.                                        |
 
 A few things worth internalizing:
 
@@ -120,9 +128,48 @@ A few things worth internalizing:
 - **Exit 0 requires a valid envelope.** The action validates stdout strictly — exactly one JSON object (multi-doc or junk-polluted stdout fails validation), `ok:true`, and a `plans` array. An exit-0 run that cannot prove what it did via the envelope buckets as `config-error`.
 - **Infra errors are swallowed by the default policy.** The CLI exits `3` for a retryable infra/runtime error (engine unreachable, service-key exchange/auth failure). The action buckets that as `infra-error`, and `fail-on: plan-failure` (default) warns-but-does-not-fail on it (retrying is the right move, not a red build). To gate on it too, use `fail-on: any`, or read the `outcome` step output and branch yourself.
 - **A no-verdict batch also exits `3`, not `1`.** When every non-passing plan in a batch could not reach a verdict — a persistent engine disconnect (after the per-plan retry budget is exhausted), or the blocked cascade of one — the CLI classifies the whole batch as infra (exit `3`), because a transient WebSocket drop is not a product regression. A batch that also contains a genuine failing verdict still exits `1` (the real failure dominates). So under the default policy a flaky-disconnect nightly shows an `infra-error` warning instead of a red `plan-failure`; switch to `fail-on: any` if you want disconnects to fail the job.
+- **A plan that needs review is not a pass.** When no plan failed but some plan has steps that need a person to look at them (run status `needs_review`), the CLI exits `3` and the envelope's top-level `outcome` is `needs-review`. The action buckets the run as `needs-review` — not the retryable `infra-error` — so the default `fail-on: plan-failure` and `fail-on: any` fail the job; only `fail-on: never` lets it through. The step summary marks those plans "needs review" with a warning annotation, not as failed. Open the run to review the steps.
 - **A quota / org-cap block fails loudly, and the gate says why.** A run rejected _before any plan starts_ because the account or organization has hit a limit is a permanent, human-fix condition — nothing executed. The CLI exits `2` (→ `config-error`) and puts the server's reason in the envelope's `error.code`, so the default `fail-on: plan-failure` gate fails the job instead of swallowing it as retryable `infra-error`. The gate message then names the real fix instead of pointing at your workflow inputs: `org_cap_exhausted` means the organization's run credits are used up or have expired (contact Agentiqa support — nothing in the workflow can clear it); `credits_exhausted` means the account's included usage and credit balance are used up (upgrade the plan — or buy credits where the plan offers them — from the limit dialog in the web app, or wait for the next monthly window); other plan-limit codes are reported with the CLI's own message. (A quota block hit mid-run, after some plans already reached a verdict, still surfaces per plan as a no-verdict outcome and can exit `3`.)
 
 ---
+
+## QA review after the run
+
+With `review: true`, a step after the run summary runs
+`agentiqa review --batch <batch-run-id> --head <deployed-sha> [--since <review-since>] [--dry-run] --summary <file> --json`
+in the job's working directory, which must be a full-history checkout of the app's repository
+(`actions/checkout` with `fetch-depth: 0`) holding `deployed-sha`. QA Manager reads what changed since the
+last review and what the run saw, and proposes test edits, possible bugs and tests to add as cards; a person
+decides each card. The step:
+
+- runs after a red run too, and before the artifact upload, so `agentiqa-review.json` and
+  `agentiqa-review-summary.md` ship in the artifact;
+- runs on Agentiqa's managed model access (no model key needed) and passes `GITHUB_TOKEN` so the review can
+  read the pull requests behind the commits — give the job `contents: read` and `pull-requests: read`
+  (a `permissions:` block sets every scope it does not list to none);
+- resolves `deployed-sha` / `review-since` (short sha, tag or ref) to full shas with `git rev-parse`;
+- appends the review's job-summary section under the run table;
+- never fails: it warns, writes `review-exit-code` / `review-json-path`, and the gate never reads them.
+
+It does not start (warning, `review-exit-code: 2`) without a batch, without `deployed-sha`, outside a git
+checkout, or when the checkout lacks the commit; a shallow checkout only warns. Docs:
+[docs.agentiqa.com/docs/qa-review](https://docs.agentiqa.com/docs/qa-review).
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: read
+steps:
+  - uses: actions/checkout@v4
+    with:
+      fetch-depth: 0
+  - uses: Agentiqa/qa-action@v1
+    with:
+      service-key: ${{ secrets.AGENTIQA_SERVICE_KEY }}
+      review: true
+      deployed-sha: ${{ github.sha }}
+      review-dry-run: true # the first nights: show the cards, save nothing
+```
 
 ## Reproducibility and version attribution
 
