@@ -79,7 +79,10 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `review`           | no                          | `false`                           | `true`: QA Manager reviews the batch after the run (see [QA review after the run](#qa-review-after-the-run)). Never changes the outcome or the gate. |
 | `deployed-sha`     | with `review: true`         | `''`                              | The commit of the app this run tested (deployed where the plans ran); full/short sha or tag in the checkout. |
 | `review-since`     | no                          | `''`                              | Where plans without a starting point start (`--since`); needed on the first review. Keep it recent: it widens the whole review. |
-| `review-dry-run`   | no                          | `false`                           | `true`: the review saves nothing (`--dry-run`); for the first nights. |
+| `review-dry-run`   | no                          | `false`                           | `true`: nothing is added to your project (`--dry-run`); one copy goes to the Agentiqa team. For the first nights. |
+| `review-timeout-minutes` | no                    | `30`                              | The most minutes the review may take; a review still running then is stopped (`review-exit-code: 124`). Keep it below the time the job has left after its longest run. |
+| `review-only`      | no                          | `false`                           | `true`: no plan runs; the setup check, then a dry review of an earlier batch (see [Setup check and review-only](#setup-check-and-review-only)). The job fails on a missing line. |
+| `review-batch`     | no                          | `''`                              | With `review-only: true`: the batch to review; empty = the project's latest finished batch. |
 
 ## Outputs
 
@@ -94,8 +97,9 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `artifact-name`        | `agentiqa-artifacts-123-1`                                 | Resolved artifact name used for the upload.                                                                                                                             |
 | `cli-resolved-version` | `1.1.32`                                                   | CLI version actually executed, resolved from `agentiqa --version` at run time (see [Reproducibility](#reproducibility-and-version-attribution)). Empty if capture failed. |
 | `batch-run-id`         | `batch_…`                                                  | The batch the run recorded (the envelope's top-level `batchRunId`); empty when none. |
-| `review-exit-code`     | `0` / `2` / `3`                                            | QA review exit code: finished / could not run (no retry helps) / transient. Empty when `review` is off. |
+| `review-exit-code`     | `0` / `2` / `3` / `124`                                    | QA review exit code: finished / could not run (no retry helps) / transient / stopped at `review-timeout-minutes`. Empty when `review` is off. |
 | `review-json-path`     | `.../agentiqa-artifacts/agentiqa-review.json`              | The review's JSON envelope; empty when the review did not run. |
+| `setup-check`          | `ok` / `missing`                                           | The review setup check; empty when the review step did not run. |
 
 ---
 
@@ -149,10 +153,22 @@ decides each card. The step:
   (a `permissions:` block sets every scope it does not list to none);
 - resolves `deployed-sha` / `review-since` (short sha, tag or ref) to full shas with `git rev-parse`;
 - appends the review's job-summary section under the run table;
-- never fails: it warns, writes `review-exit-code` / `review-json-path`, and the gate never reads them.
+- never fails: it warns, writes `review-exit-code` / `review-json-path`, and the gate never reads them;
+- stops a review that runs past `review-timeout-minutes` (default 30): TERM at the limit, KILL 10 s later,
+  a warning and `review-exit-code: 124`. A job that reaches its own `timeout-minutes` is cancelled, gate
+  included, so the limit must fit in what the job has left after its longest run.
+
+The steps you add before the Action only for the review (the checkout, finding the deployed commit) need a
+`timeout-minutes` of their own. A step that fails skips every later step, the Action included, so no plans
+run that night: check the setup by hand on a day run before the first night (below).
+
+With `review-dry-run: true` nothing is added to your Agentiqa project (no review, suggestion, issue or
+annotation; no watermark moves), and one copy of the review goes to the Agentiqa team. A copy that does not
+go out is a warning; it never changes the review's exit code.
 
 It does not start (warning, `review-exit-code: 2`) without a batch, without `deployed-sha`, outside a git
-checkout, or when the checkout lacks the commit; a shallow checkout only warns. Docs:
+checkout, or when the checkout lacks the commit (a checkout with no commit at all, which is what a failed
+`actions/checkout` leaves, is named as such); a shallow checkout only warns. Docs:
 [docs.agentiqa.com/docs/qa-review](https://docs.agentiqa.com/docs/qa-review).
 
 ```yaml
@@ -170,6 +186,30 @@ steps:
       deployed-sha: ${{ github.sha }}
       review-dry-run: true # the first nights: show the cards, save nothing
 ```
+
+### Setup check and review-only
+
+The review step starts with a setup check: one line per prerequisite (`ok`, `missing` or `unchecked`) and
+the workflow line that fixes each missing one. It checks `review` and `review-dry-run` (exactly `true` or
+`false`), a full-history checkout of this repository at the workspace root, `deployed-sha` and
+`review-since` as commits of it (`review-since` on the history of `deployed-sha`), the service key and its
+project, managed model access, the job token's pull-request read, and in review-only the batch. No model
+call, no write. The step writes the `setup-check` output.
+
+What no line proves: that the checked-out repository is your app's. A workflow that lives in a separate
+repository and checks itself out passes every line, so keep the nightly in the app's repository.
+
+`review-dry-run` is fail-safe: only `false` (or empty) saves cards. Any other value, such as a quoted
+`'True'`, runs the review dry, and the check flags it.
+
+- **Nightly** (`review: true`): the table goes above the review section only when a line is missing, as
+  warnings. Nothing else changes.
+- **Review-only** (`review-only: true`, a run you start by hand before the first night): no plan runs. The
+  table comes first in the summary, the review takes `review-batch` or the latest finished batch and is
+  always a dry run, and the last step fails the job unless every line is ok and the dry review finished.
+
+The recipe (the lines to add to your nightly, how to start the check):
+[docs.agentiqa.com/docs/qa-review#before-the-first-night](https://docs.agentiqa.com/docs/qa-review#before-the-first-night).
 
 ## Reproducibility and version attribution
 

@@ -15,6 +15,12 @@
 # against the caller's checkout (full history). Advisory only: it never changes
 # the run outcome or the gate.
 #
+# Review-only (`review-only: true`, for a run started by hand before the first
+# night): no plan runs. The review step checks the review setup (one line per
+# prerequisite, each with the workflow line that fixes it), then reviews an
+# earlier batch as a dry run. That job fails when a line is missing or the dry
+# review does not finish; the nightly path above is unchanged.
+#
 # This file is a published mirror of the action maintained in the Agentiqa
 # monorepo; open an issue on this repo for questions or fixes.
 name: 'Agentiqa — End-to-End Agentic QA in CI'
@@ -165,12 +171,44 @@ inputs:
     default: ''
   review-dry-run:
     description: >-
-      With review: true: true runs the review without saving anything (the
-      CLI's --dry-run). The job summary and the review JSON show the cards it
-      would leave; nothing reaches your Agentiqa project and no starting point
-      moves forward. Use it for the first nights, then set it back to false.
+      With review: true: true runs the review without adding anything to your
+      Agentiqa project (the CLI's --dry-run). The job summary and the review
+      JSON show the cards it would leave; no card, issue or review reaches your
+      project and no starting point moves forward. One copy of the review goes
+      to the Agentiqa team so they can check the cards with you; it does not
+      appear in your project. Use it for the first nights, then set it back to
+      false. Only false (the default) saves: any other value, such as a quoted
+      'True', is a dry run too, and the setup check flags it.
     required: false
     default: 'false'
+  review-timeout-minutes:
+    description: >-
+      With review: true: the most minutes the review may take (default 30; a
+      review usually takes a few). A review still running then is stopped: the
+      step warns, review-exit-code is 124, and the upload and the gate run as
+      usual. Keep it below the time the job has left after its longest run: a
+      job that reaches its own timeout-minutes is cancelled, and its gate never
+      runs. A whole number of minutes, 1 or more.
+    required: false
+    default: '30'
+  review-only:
+    description: >-
+      true to check the review setup without running any test plan, for a run
+      started by hand before the first night (workflow_dispatch). The job
+      summary starts with one line per prerequisite, ok or missing, and the
+      workflow line that fixes each missing one. Then the review runs on an
+      earlier batch (review-batch) as a dry run: nothing is added to your
+      project, whatever review-dry-run says. Pass the same inputs as the
+      nightly. The job fails when a line is missing or the dry review does not
+      finish.
+    required: false
+    default: 'false'
+  review-batch:
+    description: >-
+      With review-only: true: the batch to review (batch_...). Leave empty for
+      the project's latest finished batch.
+    required: false
+    default: ''
 
 outputs:
   outcome:
@@ -198,7 +236,7 @@ outputs:
     value: ${{ steps.run.outputs.plans-failed }}
   artifact-name:
     description: 'Resolved artifact name used for the upload.'
-    value: ${{ steps.run.outputs.artifact-name }}
+    value: ${{ steps.run.outputs.artifact-name || steps.review.outputs.artifact-name }}
   cli-resolved-version:
     description: >-
       The Agentiqa CLI version actually executed, resolved at run time from
@@ -216,11 +254,18 @@ outputs:
     description: >-
       Exit code of the QA review: 0 finished / 2 could not run (setup,
       permission or account limit; retrying will not help) / 3 did not finish
-      (transient). Empty when review is off. Never changes outcome or the gate.
+      (transient) / 124 stopped at review-timeout-minutes. Empty when review is
+      off. Never changes outcome or the gate.
     value: ${{ steps.review.outputs.review-exit-code }}
   review-json-path:
     description: 'Path to the QA review JSON envelope (schemaVersion:1). Empty when the review did not run.'
     value: ${{ steps.review.outputs.review-json-path }}
+  setup-check:
+    description: >-
+      The review setup check: ok (every line ok) or missing (a line is missing
+      or could not be checked; the job summary names it). Empty when the
+      review step did not run.
+    value: ${{ steps.review.outputs.setup-check }}
 
 runs:
   using: 'composite'
@@ -251,6 +296,8 @@ runs:
 
     - name: Run Agentiqa test plans
       id: run
+      # review-only: no plan runs (the review step reviews an earlier batch).
+      if: ${{ inputs.review-only != 'true' }}
       shell: bash
       env:
         # Auth + control-plane. AGENTIQA_SERVICE_KEY alone authenticates the
@@ -514,7 +561,8 @@ runs:
       # needed. The Reason column carries the short cause on the failing row
       # itself, so there is no separate failures list below the table.
       # Reads only the schemaVersion:1 envelope; no secret is ever referenced.
-      if: ${{ always() }}
+      # Skipped in review-only: no plan ran, so there is no run table.
+      if: ${{ always() && inputs.review-only != 'true' }}
       shell: bash
       env:
         JSON_PATH: ${{ steps.run.outputs.json-path }}
@@ -663,8 +711,12 @@ runs:
       # review-* outputs and a section of the job summary. It runs after a red
       # run too; `!cancelled()` keeps a cancelled job from starting a review.
       # Placed before the upload so the review files ship in the artifact.
+      # It starts with the setup check (one line per prerequisite): printed
+      # first in review-only, and in a nightly only when a line is missing.
+      # In review-only it reviews an earlier batch as a dry run, and the
+      # last step (Gate on the setup check) fails the job on a missing line.
       id: review
-      if: ${{ !cancelled() && inputs.review == 'true' }}
+      if: ${{ !cancelled() && (inputs.review == 'true' || inputs.review-only == 'true') }}
       shell: bash
       env:
         AGENTIQA_SERVICE_KEY: ${{ inputs.service-key }}
@@ -677,7 +729,12 @@ runs:
         DEPLOYED_SHA: ${{ inputs.deployed-sha }}
         REVIEW_SINCE: ${{ inputs.review-since }}
         REVIEW_DRY_RUN: ${{ inputs.review-dry-run }}
+        REVIEW_TIMEOUT_MINUTES: ${{ inputs.review-timeout-minutes }}
         ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
+        REVIEW_INPUT: ${{ inputs.review }}
+        REVIEW_ONLY: ${{ inputs.review-only }}
+        REVIEW_BATCH: ${{ inputs.review-batch }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
       run: |
         # No errexit (`shell: bash` starts with -e): a review that exits
         # nonzero is reported below, and every path ends in finish(), exit 0.
@@ -700,6 +757,7 @@ runs:
         finish() {
           echo "review-exit-code=$1" >> "$GITHUB_OUTPUT"
           echo "review-json-path=$2" >> "$GITHUB_OUTPUT"
+          echo "setup-check=${SETUP_CHECK_RESULT:-}" >> "$GITHUB_OUTPUT"
           exit 0
         }
         # A review that could not start: one warning, one summary line, and
@@ -721,6 +779,286 @@ runs:
           git rev-parse --verify --quiet "$1^{commit}" 2>/dev/null || true
         }
 
+        # ── Setup check ───────────────────────────────────────────────────
+        # One line per prerequisite of the review: ok, missing, or unchecked
+        # (a line it depends on is missing, or a request failed), and the
+        # workflow line that fixes each missing one. The git side is read
+        # here. What only a request proves (the service key, model access,
+        # the job token's pull-request read, the batch) comes from
+        # `agentiqa review check`: no model call, no write. In review-only
+        # the check is printed first and picks the batch. In a nightly it is
+        # printed only when a line is missing, and it changes nothing below.
+        lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+        review_only=""
+        if [ "$(lower "${REVIEW_ONLY:-}")" = "true" ]; then
+          review_only="1"
+        fi
+        # A literal dollar-brace-brace for the workflow lines below: GitHub
+        # expands that sequence anywhere in this script, so it never appears
+        # here as such.
+        GHX='$''{{'
+        # A table cell: one line, pipes escaped, bounded.
+        cell() {
+          local v
+          v="$(printf '%s' "$1" | tr '\n\r' '  ' | sed 's/|/\\|/g')"
+          printf '%s' "${v:0:400}"
+        }
+        check_rows=()
+        check_total=0
+        check_missing=0
+        # check_line <ok|missing|unchecked> <name> <what was found> [<what fixes it>]
+        check_line() {
+          local mark="ok" level="warning"
+          check_total=$((check_total + 1))
+          if [ "$1" != "ok" ]; then
+            check_missing=$((check_missing + 1))
+            mark="**$1**"
+          fi
+          check_rows+=("| $2 | ${mark} · $(cell "$3") | $(cell "${4:-}") |")
+          echo "  $1 · $2: $(cell "$3")"
+          if [ "$1" != "ok" ]; then
+            [ -n "$review_only" ] && level="error"
+            echo "::${level} title=QA review setup check::$2: $(cell "$3")${4:+ Fix: $(cell "$4")}"
+          fi
+        }
+        echo "QA review setup check:"
+
+        if [ -n "$review_only" ]; then
+          if [ "$(lower "${REVIEW_INPUT:-}")" = "true" ]; then
+            check_line ok "review" "true: the nightly reviews its batch."
+          else
+            check_line missing "review" "'$(shown "${REVIEW_INPUT:-}")': the nightly runs no review." '`review: true`'
+          fi
+        fi
+
+        # Only false (or empty) saves cards. A value that is neither true nor
+        # false, such as a quoted 'True', is a dry run to be safe (see the
+        # review below), and it is flagged: the workflow should say what it means.
+        case "${REVIEW_DRY_RUN:-}" in
+          true) check_line ok "review-dry-run" "true: the nightly review adds nothing to your project." ;;
+          false | '') check_line ok "review-dry-run" "false: the nightly review saves its cards." ;;
+          *) check_line missing "review-dry-run" "'$(shown "$REVIEW_DRY_RUN")' is neither true nor false: to be safe, the review runs dry and adds nothing to your project." '`review-dry-run: true` (or `false`), lowercase' ;;
+        esac
+
+        have_git=""
+        read_repo=""
+        if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+          check_line missing "checkout" "The workspace root is not a git checkout." 'A step before this one: `- uses: actions/checkout@v4`, with no `path:`'
+        elif ! git rev-parse --verify --quiet HEAD > /dev/null 2>&1; then
+          check_line missing "checkout" "The checkout has no commits: the checkout step failed or checked nothing out." '`contents: read` under `permissions:`'
+        elif [ -n "$(git rev-parse --show-prefix 2> /dev/null)" ]; then
+          check_line missing "checkout" "The workspace root is a subdirectory of the checkout." 'Remove `path:` from the `actions/checkout` step'
+        else
+          have_git="1"
+          origin_repo="$(git remote get-url origin 2> /dev/null | tr -d '\n\r' | sed -E 's#/+$##; s#\.git$##; s#^.*[:/]([^/:]+/[^/:]+)$#\1#')"
+          if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "$origin_repo" ] \
+             && [ "$(lower "$origin_repo")" != "$(lower "$GITHUB_REPOSITORY")" ]; then
+            check_line missing "checkout" "The checkout is ${origin_repo}, but this workflow runs in ${GITHUB_REPOSITORY}: the review would read the pull requests of ${GITHUB_REPOSITORY} and record its progress there." "Run this workflow in your app's repository"
+          else
+            read_repo="${origin_repo:-${GITHUB_REPOSITORY:-}}"
+            check_line ok "checkout" "${read_repo:-The repository} at the workspace root: the review reads its commits and pull requests."
+          fi
+        fi
+
+        if [ -z "$have_git" ]; then
+          check_line unchecked "full history" "Not checked: no usable checkout."
+        else
+          n_commits="$(git rev-list --count HEAD 2> /dev/null || echo '?')"
+          commits_word="commits"
+          [ "$n_commits" = "1" ] && commits_word="commit"
+          if [ "$(git rev-parse --is-shallow-repository 2> /dev/null)" = "true" ]; then
+            check_line missing "full history" "The checkout is shallow (${n_commits} ${commits_word})." '`fetch-depth: 0` in the `actions/checkout` step'
+          else
+            check_line ok "full history" "${n_commits} ${commits_word}."
+          fi
+        fi
+
+        check_head=""
+        if [ -z "$DEPLOYED_SHA" ]; then
+          check_line missing "deployed-sha" "deployed-sha is empty." "\`deployed-sha: ${GHX} github.sha }}\`, or the commit your deploy serves"
+        elif [ -z "$have_git" ]; then
+          check_line unchecked "deployed-sha" "'$(shown "$DEPLOYED_SHA")': not checked, no usable checkout."
+        else
+          check_head="$(commit_of "$DEPLOYED_SHA")"
+          if [ -z "$check_head" ]; then
+            check_line missing "deployed-sha" "'$(shown "$DEPLOYED_SHA")' is not a commit in this checkout." '`fetch-depth: 0`, in a checkout of the repository your app is deployed from'
+          else
+            check_line ok "deployed-sha" "${check_head:0:9} $(git log -1 --format='%cs %s' "$check_head" 2> /dev/null)"
+          fi
+        fi
+
+        # Empty is missing only for a check run: before the first live
+        # review no plan has a starting point of its own (a dry run never
+        # records one). A nightly without it is fine once every plan has
+        # one, and the review names no_base itself when one does not.
+        if [ -z "$REVIEW_SINCE" ] && [ -n "$review_only" ]; then
+          check_line missing "review-since" "review-since is empty: until a live review records where each plan starts, the review starts from review-since, and without it the review stops (no_base)." '`review-since:` a recent tag or commit, for example your latest release tag'
+        elif [ -z "$REVIEW_SINCE" ]; then
+          check_line ok "review-since" "Not set: each plan starts where its last review ended."
+        elif [ -z "$have_git" ]; then
+          check_line unchecked "review-since" "'$(shown "$REVIEW_SINCE")': not checked, no usable checkout."
+        else
+          check_since="$(commit_of "$REVIEW_SINCE")"
+          if [ -z "$check_since" ]; then
+            check_line missing "review-since" "'$(shown "$REVIEW_SINCE")' is not a commit in this checkout." '`review-since:` a tag or commit of this repository, with `fetch-depth: 0`'
+          elif [ -z "$check_head" ]; then
+            check_line unchecked "review-since" "${check_since:0:9}: not checked against deployed-sha."
+          elif ! git merge-base --is-ancestor "$check_since" "$check_head" 2> /dev/null; then
+            check_line missing "review-since" "${check_since:0:9} is not on the history of deployed-sha ${check_head:0:9}." '`review-since:` an older commit of the branch deployed-sha is on'
+          else
+            n_window="$(git rev-list --count "${check_since}..${check_head}" 2> /dev/null || echo '?')"
+            check_line ok "review-since" "${check_since:0:9} $(git log -1 --format=%cs "$check_since" 2> /dev/null): ${n_window} commits up to deployed-sha."
+          fi
+        fi
+
+        # The batch to review in review-only: review-batch, else the latest
+        # finished batch of the key's project (`review check --batch latest`).
+        check_batch=""
+        batch_arg=""
+        if [ -n "$review_only" ]; then
+          if [ -z "${REVIEW_BATCH:-}" ]; then
+            batch_arg="latest"
+          elif [[ "$REVIEW_BATCH" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$ ]]; then
+            batch_arg="$REVIEW_BATCH"
+          else
+            check_line missing "batch" "review-batch '$(shown "$REVIEW_BATCH")' is not a batch id." '`review-batch:` a batch id (batch_...), or leave it empty for the latest finished batch'
+          fi
+        fi
+        key_fix="\`service-key: ${GHX} secrets.AGENTIQA_SERVICE_KEY }}\`: a key of the project the nightly runs (Project Settings, CLI Service Keys)"
+        if [ -z "${AGENTIQA_SERVICE_KEY:-}" ]; then
+          check_line missing "service key" "service-key is empty." "$key_fix"
+          check_line unchecked "model access" "Not checked: it needs a working service key."
+          check_line unchecked "pull requests" "Not checked: it needs a working service key."
+          [ -n "$batch_arg" ] && check_line unchecked "batch" "Not checked: it needs a working service key."
+        else
+          cargs=(review check --json)
+          [ -n "$check_head" ] && cargs+=(--head "$check_head")
+          [ -n "$batch_arg" ] && cargs+=(--batch "$batch_arg")
+          check_json="$(mktemp)"
+          # The check is a few reads, and it must never hold the review (or
+          # the job) behind it. Bounded on every runner (timeout(1) is not on
+          # a stock macOS runner), the way the review below is: a process
+          # group of its own (`set -m`), TERM at the limit, KILL 5 s later.
+          check_limit_s=180
+          check_stopped="$(mktemp)"
+          rm -f "$check_stopped"
+          set -m
+          npx -y "agentiqa@${CLI_VERSION}" "${cargs[@]}" > "$check_json" &
+          check_pid=$!
+          (
+            sleep "$check_limit_s"
+            : > "$check_stopped"
+            kill -TERM -- "-$check_pid"
+            sleep 5
+            kill -KILL -- "-$check_pid"
+          ) > /dev/null 2>&1 &
+          check_dog=$!
+          set +m
+          wait "$check_pid"
+          check_exit="$?"
+          kill -- "-$check_dog" 2> /dev/null
+          wait "$check_dog" 2> /dev/null
+          if [ -e "$check_stopped" ]; then
+            # What it started goes with it, also a child that ignored TERM.
+            kill -KILL -- "-$check_pid" 2> /dev/null
+            rm -f "$check_stopped"
+            [ "$check_exit" = "0" ] || check_exit=124
+          fi
+          if command -v jq > /dev/null 2>&1 \
+             && jq -e -s 'length==1 and (.[0]|type=="object") and ((.[0].setupCheck.checks|type)=="array")' "$check_json" > /dev/null 2>&1; then
+            while IFS=$'\t' read -r cid cst cdet ccode; do
+              case "$cst" in ok | missing | unchecked) ;; *) cst="unchecked" ;; esac
+              fix=""
+              case "$cid" in
+                service-key)
+                  name="service key"
+                  [ "$cst" = "missing" ] && fix="$key_fix"
+                  ;;
+                model-access)
+                  name="model access"
+                  [ "$cst" = "missing" ] && fix="Not a workflow line: ask Agentiqa to turn on managed model access for this account${ccode:+ (${ccode})}"
+                  ;;
+                pull-requests)
+                  name="pull requests"
+                  [ "$cst" = "missing" ] && fix='`pull-requests: read` under `permissions:`, next to `contents: read`'
+                  ;;
+                batch)
+                  [ -n "$batch_arg" ] || continue
+                  name="batch"
+                  [ "$cst" = "missing" ] && fix='Run the nightly once, or set `review-batch:` to a finished batch of this project'
+                  ;;
+                *) continue ;;
+              esac
+              check_line "$cst" "$name" "$cdet" "$fix"
+            done < <(jq -r -s '.[0].setupCheck.checks[] | [(.id // ""), (.status // ""), (.detail // "-"), (.code // "")] | map(tostring) | @tsv' "$check_json" 2> /dev/null)
+            if [ -n "$batch_arg" ]; then
+              check_batch="$(jq -r -s '.[0].setupCheck.batch.id // "" | strings' "$check_json" 2> /dev/null | tr -d '\n\r')"
+            fi
+          else
+            err_code=""
+            err_msg=""
+            if command -v jq > /dev/null 2>&1; then
+              err_code="$(jq -r -s '.[0].error.code // "" | strings' "$check_json" 2> /dev/null | tr -d '\n\r')"
+              err_msg="$(jq -r -s '.[0].error.message // "" | strings' "$check_json" 2> /dev/null | tr '\n\r' '  ')"
+            fi
+            if [ "$err_code" = "usage_error" ] && [[ "$err_msg" == *'subcommand "check"'* ]]; then
+              # An older CLI: a check run says so; a nightly stays quiet.
+              if [ -n "$review_only" ]; then
+                check_line unchecked "service key, model access, pull requests" "agentiqa@${CLI_VERSION} has no \`review check\`." '`cli-version: latest`'
+              else
+                echo "  (agentiqa@${CLI_VERSION} has no review check: service key, model access and pull requests not checked)"
+              fi
+            elif [ "$check_exit" = "124" ]; then
+              check_line unchecked "service key, model access, pull requests" "The check did not finish within ${check_limit_s} s and was stopped. See the step log." ""
+            else
+              check_line unchecked "service key, model access, pull requests" "The check did not run (exit ${check_exit}${err_code:+, ${err_code}}). See the step log." ""
+            fi
+            # Without the check, review-batch is taken as given.
+            [ -n "$batch_arg" ] && [ "$batch_arg" != "latest" ] && check_batch="$batch_arg"
+          fi
+          rm -f "$check_json"
+        fi
+
+        SETUP_CHECK_RESULT="ok"
+        [ "$check_missing" -gt 0 ] && SETUP_CHECK_RESULT="missing"
+        if [ -n "$review_only" ] || [ "$check_missing" -gt 0 ]; then
+          {
+            echo ""
+            if [ -n "$review_only" ]; then
+              echo "**Agentiqa QA review setup check** · no test plan ran (review-only) · $((check_total - check_missing)) of ${check_total} ok"
+            else
+              echo "**QA review setup check** · ${check_missing} of ${check_total} to fix"
+            fi
+            echo ""
+            echo "| Check | Result | What fixes it |"
+            echo "| --- | --- | --- |"
+            printf '%s\n' ${check_rows[@]+"${check_rows[@]}"}
+            # What no line can prove: that this repository is the app's own.
+            # A workflow that lives in a separate repository (a QA suite, say)
+            # and checks itself out passes every line above.
+            if [ -n "$review_only" ] && [ -n "$read_repo" ]; then
+              echo ""
+              echo "The check cannot tell whether $(cell "$read_repo") holds your app's code. The review reads its commits and pull requests, so the nightly belongs in the repository your app is built from."
+            fi
+          } >> "$SUMMARY"
+        fi
+
+        if [ -n "$review_only" ]; then
+          # No plan ran: the review takes the batch the check picked, and it is
+          # always a dry run (a check run never saves cards).
+          artifact_name="${INPUT_ARTIFACT_NAME:-}"
+          [ -n "$artifact_name" ] || artifact_name="agentiqa-review-check-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-1}"
+          echo "artifact-name=$(printf '%s' "$artifact_name" | tr -d '\n\r')" >> "$GITHUB_OUTPUT"
+          REVIEW_DRY_RUN="true"
+          BATCH_RUN_ID="$check_batch"
+          if [ -z "$BATCH_RUN_ID" ]; then
+            not_started "no batch to review. See the batch line of the setup check."
+          fi
+          echo "Review-only: a dry review of batch ${BATCH_RUN_ID}."
+        elif [ -n "${REVIEW_BATCH:-}" ]; then
+          echo "::warning title=Agentiqa QA review::review-batch is read only with review-only: true. This review takes the batch this run recorded."
+        fi
+
         if [ -z "${AGENTIQA_SERVICE_KEY:-}" ]; then
           not_started "service-key is empty."
         fi
@@ -739,6 +1077,12 @@ runs:
 
         HEAD_SHA="$(commit_of "$DEPLOYED_SHA")"
         if [ -z "$HEAD_SHA" ]; then
+          # A checkout step that failed leaves an initialized repository with
+          # no commit at all (it runs `git init` before it fetches): name that
+          # cause, not the commit.
+          if ! git rev-parse --verify --quiet HEAD > /dev/null 2>&1; then
+            not_started "the checkout has no commits: the checkout step failed or checked nothing out. For a private repository, the job's permissions must list contents: read."
+          fi
           not_started "deployed-sha '$(shown "$DEPLOYED_SHA")' is not a commit in this checkout. Check out the repository your app is deployed from, with full history (fetch-depth: 0)."
         fi
         SINCE_SHA=""
@@ -759,17 +1103,73 @@ runs:
         if [ -n "$SINCE_SHA" ]; then
           rargs+=(--since "$SINCE_SHA")
         fi
-        # review-dry-run: the cards it would leave, nothing saved (shadow nights).
+        # review-dry-run: the cards it would leave, nothing added to the project
+        # (shadow nights); the CLI sends one copy to the Agentiqa team. Only
+        # false (or empty) saves. Any other value, such as a quoted 'True', is a
+        # dry run: the setup check above flags it.
         dry_note=""
-        if [ "${REVIEW_DRY_RUN:-}" = "true" ]; then
-          rargs+=(--dry-run)
-          dry_note=" (dry run: nothing was saved)"
+        case "${REVIEW_DRY_RUN:-}" in
+          false | '') ;;
+          *)
+            rargs+=(--dry-run)
+            dry_note=" (dry run: nothing was added to your Agentiqa project)"
+            ;;
+        esac
+
+        # The review's time limit (review-timeout-minutes): a hung review must
+        # never hold the job until the job's own timeout cancels it, gate
+        # included. An empty value means the default; any other value that is
+        # not a whole number of minutes (1-9999) warns and uses the default.
+        limit_min="${REVIEW_TIMEOUT_MINUTES:-}"
+        limit_min="${limit_min//[[:space:]]/}"
+        if [ -z "$limit_min" ]; then
+          limit_min=30
+        elif [[ ! "$limit_min" =~ ^[1-9][0-9]{0,3}$ ]]; then
+          echo "::warning title=Agentiqa QA review::review-timeout-minutes '$(shown "$REVIEW_TIMEOUT_MINUTES")' is not a whole number of minutes: using 30."
+          limit_min=30
         fi
+        limit_s=$((limit_min * 60))
 
         echo "Running: npx -y agentiqa@${CLI_VERSION} ${rargs[*]}"
+        echo "Time limit: ${limit_min} min (review-timeout-minutes)."
         # --json => one envelope on stdout (kept as a file), logs on stderr.
-        npx -y "agentiqa@${CLI_VERSION}" "${rargs[@]}" > "$REVIEW_JSON"
+        # The CLI runs in a process group of its own (`set -m`), so the
+        # watchdog stops it with everything it started: TERM at the limit,
+        # KILL 10 s later. The watchdog leaves a flag file when it fires; it is
+        # stopped as soon as the review ends.
+        stopped_flag="$(mktemp)"
+        rm -f "$stopped_flag"
+        started=$SECONDS
+        set -m
+        npx -y "agentiqa@${CLI_VERSION}" "${rargs[@]}" > "$REVIEW_JSON" &
+        review_pid=$!
+        (
+          sleep "$limit_s"
+          : > "$stopped_flag"
+          kill -TERM -- "-$review_pid"
+          sleep 10
+          kill -KILL -- "-$review_pid"
+        ) > /dev/null 2>&1 &
+        watchdog_pid=$!
+        set +m
+        wait "$review_pid"
         review_exit="$?"
+        kill -- "-$watchdog_pid" 2> /dev/null
+        wait "$watchdog_pid" 2> /dev/null
+        echo "The review took $((SECONDS - started)) s."
+
+        # Stopped at the limit (a review that exited 0 just before the
+        # watchdog fired finished): nothing it printed is a result.
+        if [ -e "$stopped_flag" ] && [ "$review_exit" != "0" ]; then
+          rm -f "$stopped_flag"
+          kill -KILL -- "-$review_pid" 2> /dev/null
+          # An envelope it never wrote is not shipped as an empty file.
+          [ -s "$REVIEW_JSON" ] || rm -f "$REVIEW_JSON"
+          echo "::warning title=Agentiqa QA review::The review was stopped after ${limit_min} min (review-timeout-minutes) before it finished. The run outcome and the gate are unchanged. If reviews need longer and the job has the time, raise review-timeout-minutes."
+          printf '\n> **QA review stopped after %s min** (review-timeout-minutes) before it finished. The run outcome and the gate are unchanged.\n' "$limit_min" >> "$SUMMARY"
+          finish 124 ""
+        fi
+        rm -f "$stopped_flag"
 
         if [ "$review_exit" = "0" ]; then
           echo "Agentiqa QA review finished${dry_note}. Envelope: ${REVIEW_JSON}"
@@ -812,12 +1212,14 @@ runs:
       if: ${{ always() && inputs.upload-artifacts == 'true' }}
       uses: actions/upload-artifact@v7
       with:
-        name: ${{ steps.run.outputs.artifact-name || 'agentiqa-artifacts' }}
+        name: ${{ steps.run.outputs.artifact-name || steps.review.outputs.artifact-name || 'agentiqa-artifacts' }}
         path: ${{ inputs.artifacts-dir }}
         if-no-files-found: warn
         retention-days: ${{ steps.retention.outputs.days }}
 
     - name: Gate on outcome
+      # review-only runs no plan: the step after this one gates that run.
+      if: ${{ inputs.review-only != 'true' }}
       shell: bash
       env:
         OUTCOME: ${{ steps.run.outputs.outcome }}
@@ -911,3 +1313,25 @@ runs:
             exit 1
             ;;
         esac
+
+    - name: Gate on the setup check
+      # review-only only. A check run is green when every line of the setup
+      # check is ok and the dry review finished: the nightly is ready. Any
+      # other result fails the job, so a missing line is a red check run, not
+      # a red night.
+      if: ${{ inputs.review-only == 'true' }}
+      shell: bash
+      env:
+        SETUP_CHECK: ${{ steps.review.outputs.setup-check }}
+        REVIEW_EXIT_CODE: ${{ steps.review.outputs.review-exit-code }}
+      run: |
+        set -euo pipefail
+        if [ "${SETUP_CHECK:-}" != "ok" ]; then
+          echo "::error::The QA review setup check found something to fix. The job summary lists each line and the workflow line that fixes it."
+          exit 1
+        fi
+        if [ "${REVIEW_EXIT_CODE:-}" != "0" ]; then
+          echo "::error::Every setup line is ok, but the dry review did not finish (review-exit-code ${REVIEW_EXIT_CODE:-empty}). The review step's warning says why."
+          exit 1
+        fi
+        echo "Setup check ok and the dry review finished: the nightly review is ready."
