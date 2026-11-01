@@ -79,7 +79,7 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `review`           | no                          | `false`                           | `true`: QA Manager reviews the batch after the run (see [QA review after the run](#qa-review-after-the-run)). Never changes the outcome or the gate. |
 | `deployed-sha`     | with `review: true`         | `''`                              | The commit of the app this run tested (deployed where the plans ran); full/short sha or tag in the checkout. |
 | `review-since`     | no                          | `''`                              | Where plans without a starting point start (`--since`); needed on the first review. Keep it recent: it widens the whole review. |
-| `review-dry-run`   | no                          | `false`                           | `true`: nothing is added to your project (`--dry-run`); one copy goes to the Agentiqa team. For the first nights. |
+| `review-dry-run`   | no                          | `false`                           | `true`: nothing is added to your project (`--dry-run`); one copy, with a trace of how the review reached its cards, goes to the Agentiqa team and is deleted after 30 days. For the first nights. |
 | `review-timeout-minutes` | no                    | `30`                              | The most minutes the review may take; a review still running then is stopped (`review-exit-code: 124`). Keep it below the time the job has left after its longest run. |
 | `review-only`      | no                          | `false`                           | `true`: no plan runs; the setup check, then a dry review of an earlier batch (see [Setup check and review-only](#setup-check-and-review-only)). The job fails on a missing line. |
 | `review-batch`     | no                          | `''`                              | With `review-only: true`: the batch to review; empty = the project's latest finished batch. |
@@ -163,8 +163,12 @@ The steps you add before the Action only for the review (the checkout, finding t
 run that night: check the setup by hand on a day run before the first night (below).
 
 With `review-dry-run: true` nothing is added to your Agentiqa project (no review, suggestion, issue or
-annotation; no watermark moves), and one copy of the review goes to the Agentiqa team. A copy that does not
-go out is a warning; it never changes the review's exit code.
+annotation; no watermark moves), and one copy of the review goes to the Agentiqa team: the cards, the
+summary, and a trace of how the review reached them (changed file paths, commit subjects, pull request
+titles, how plans were linked to files, the AI model's reasoning; secret-looking values redacted). It holds
+no whole files, diffs or prompts; like a saved card, it can quote the short text cited as evidence. Only the
+Agentiqa team reads it, and it is deleted after 30 days. A copy that does not go out is a warning; it never
+changes the review's exit code.
 
 It does not start (warning, `review-exit-code: 2`) without a batch, without `deployed-sha`, outside a git
 checkout, or when the checkout lacks the commit (a checkout with no commit at all, which is what a failed

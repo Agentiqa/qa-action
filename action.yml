@@ -175,10 +175,17 @@ inputs:
       Agentiqa project (the CLI's --dry-run). The job summary and the review
       JSON show the cards it would leave; no card, issue or review reaches your
       project and no starting point moves forward. One copy of the review goes
-      to the Agentiqa team so they can check the cards with you; it does not
-      appear in your project. Use it for the first nights, then set it back to
-      false. Only false (the default) saves: any other value, such as a quoted
-      'True', is a dry run too, and the setup check flags it.
+      to the Agentiqa team so they can check the cards with you: the cards, the
+      summary, and a trace of how the review reached them (changed file paths,
+      commit subjects, pull request titles, how plans were linked to files, the
+      AI model's reasoning; secret-looking values redacted). It holds no whole
+      files, diffs or prompts; like a saved card, it can quote the short text
+      cited as evidence: a changed line, or a sentence from a commit message,
+      pull request description or code comment. Only the Agentiqa team reads
+      it, it does not appear in your project, and it is deleted after 30 days.
+      Use it for the first nights, then set it back to false. Only false (the
+      default) saves: any other value, such as a quoted 'True', is a dry run
+      too, and the setup check flags it.
     required: false
     default: 'false'
   review-timeout-minutes:
@@ -198,9 +205,11 @@ inputs:
       summary starts with one line per prerequisite, ok or missing, and the
       workflow line that fixes each missing one. Then the review runs on an
       earlier batch (review-batch) as a dry run: nothing is added to your
-      project, whatever review-dry-run says. Pass the same inputs as the
-      nightly. The job fails when a line is missing or the dry review does not
-      finish.
+      project, whatever review-dry-run says. Like every dry run, it sends one
+      copy of the review, with its trace, to the Agentiqa team (see
+      review-dry-run); the copy is deleted after 30 days. Pass the same inputs
+      as the nightly. The job fails when a line is missing or the dry review
+      does not finish.
     required: false
     default: 'false'
   review-batch:
