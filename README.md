@@ -80,6 +80,7 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `deployed-sha`     | with `review: true`         | `''`                              | The commit of the app this run tested (deployed where the plans ran); full/short sha or tag in the checkout. |
 | `review-since`     | no                          | `''`                              | Where plans without a starting point start (`--since`); needed on the first review. Keep it recent: it widens the whole review. |
 | `review-dry-run`   | no                          | `false`                           | `true`: nothing is added to your project (`--dry-run`); one copy, with a trace of how the review reached its cards, goes to the Agentiqa team and is deleted after 30 days. For the first nights. |
+| `review-trace-hunks` | no | `false` | With a dry run: `true` opts in to the diff hunks each decision rested on, in the copy's trace (`--trace-hunks`). Ignored with a warning on a saved review. |
 | `review-timeout-minutes` | no                    | `30`                              | The most minutes the review may take; a review still running then is stopped (`review-exit-code: 124`). Keep it below the time the job has left after its longest run. |
 | `review-only`      | no                          | `false`                           | `true`: no plan runs; the setup check, then a dry review of an earlier batch (see [Setup check and review-only](#setup-check-and-review-only)). The job fails on a missing line. |
 | `review-batch`     | no                          | `''`                              | With `review-only: true`: the batch to review; empty = the project's latest finished batch. |
@@ -167,8 +168,10 @@ annotation; no watermark moves), and one copy of the review goes to the Agentiqa
 summary, and a trace of how the review reached them (changed file paths, commit subjects, pull request
 titles, how plans were linked to files, the AI model's reasoning; secret-looking values redacted). It holds
 no whole files, diffs or prompts; like a saved card, it can quote the short text cited as evidence. Only the
-Agentiqa team reads it, and it is deleted after 30 days. A copy that does not go out is a warning; it never
-changes the review's exit code.
+Agentiqa team reads it, and it is deleted after 30 days. With `review-trace-hunks: true` (opt-in, dry runs
+only) the trace also carries the diff hunks each decision rested on, each stored once, redacted and capped;
+they never reach the project, the job summary or the review JSON. A copy that does not go out is a warning;
+it never changes the review's exit code.
 
 It does not start (warning, `review-exit-code: 2`) without a batch, without `deployed-sha`, outside a git
 checkout, or when the checkout lacks the commit (a checkout with no commit at all, which is what a failed

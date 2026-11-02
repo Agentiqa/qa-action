@@ -179,13 +179,29 @@ inputs:
       summary, and a trace of how the review reached them (changed file paths,
       commit subjects, pull request titles, how plans were linked to files, the
       AI model's reasoning; secret-looking values redacted). It holds no whole
-      files, diffs or prompts; like a saved card, it can quote the short text
-      cited as evidence: a changed line, or a sentence from a commit message,
-      pull request description or code comment. Only the Agentiqa team reads
-      it, it does not appear in your project, and it is deleted after 30 days.
-      Use it for the first nights, then set it back to false. Only false (the
-      default) saves: any other value, such as a quoted 'True', is a dry run
-      too, and the setup check flags it.
+      files, diffs or prompts unless you opt in to the diff hunks with
+      review-trace-hunks; like a saved card, it can quote the short text cited
+      as evidence: a changed line, or a sentence from a commit message, pull
+      request description or code comment. Only the Agentiqa team reads it, it
+      does not appear in your project, and it is deleted after 30 days. Use it
+      for the first nights, then set it back to false. Only false (the default)
+      saves: any other value, such as a quoted 'True', is a dry run too, and
+      the setup check flags it.
+    required: false
+    default: 'false'
+  review-trace-hunks:
+    description: >-
+      With a dry run (review-dry-run: true, or review-only: true): true opts in
+      to sending the diff hunks each decision of the review rested on, in the
+      trace of the dry-run copy (the CLI's --trace-hunks): the changed lines as
+      the AI model read them, or the one commit's change a check compared, for
+      the files and commits each card, possible bug or decision cites. Each
+      hunk is stored once, secret-looking values are redacted, and the lines
+      and hunks are capped. They go only into the copy for the Agentiqa team
+      (deleted after 30 days), never into your project, the job summary or the
+      review JSON. Ignored, with a warning, when the review is not a dry run:
+      a saved review never sends diffs. Only true opts in: any other value
+      than false is ignored with a warning.
     required: false
     default: 'false'
   review-timeout-minutes:
@@ -738,6 +754,7 @@ runs:
         DEPLOYED_SHA: ${{ inputs.deployed-sha }}
         REVIEW_SINCE: ${{ inputs.review-since }}
         REVIEW_DRY_RUN: ${{ inputs.review-dry-run }}
+        REVIEW_TRACE_HUNKS: ${{ inputs.review-trace-hunks }}
         REVIEW_TIMEOUT_MINUTES: ${{ inputs.review-timeout-minutes }}
         ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
         REVIEW_INPUT: ${{ inputs.review }}
@@ -1124,6 +1141,19 @@ runs:
             dry_note=" (dry run: nothing was added to your Agentiqa project)"
             ;;
         esac
+        # review-trace-hunks: the diff hunks of each decision in the dry-run
+        # copy's trace (opt-in). A saved review never sends diffs, so the
+        # input is ignored with a warning there; only true opts in, and any
+        # other value than true or false says so (never echoed back).
+        if [ "${REVIEW_TRACE_HUNKS:-}" = "true" ]; then
+          if [ -n "$dry_note" ]; then
+            rargs+=(--trace-hunks)
+          else
+            echo "::warning title=Agentiqa QA review::review-trace-hunks is read only with a dry run (review-dry-run: true): a saved review never sends diffs. It was ignored."
+          fi
+        elif [ -n "${REVIEW_TRACE_HUNKS:-}" ] && [ "${REVIEW_TRACE_HUNKS}" != "false" ]; then
+          echo "::warning title=Agentiqa QA review::review-trace-hunks is neither true nor false: only true opts in to the diff hunks, so none are sent."
+        fi
 
         # The review's time limit (review-timeout-minutes): a hung review must
         # never hold the job until the job's own timeout cancels it, gate
