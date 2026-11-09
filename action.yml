@@ -18,8 +18,9 @@
 # Review-only (`review-only: true`, for a run started by hand before the first
 # night): no plan runs. The review step checks the review setup (one line per
 # prerequisite, each with the workflow line that fixes it), then reviews an
-# earlier batch as a dry run. That job fails when a line is missing or the dry
-# review does not finish; the nightly path above is unchanged.
+# earlier batch, as a dry run unless review-dry-run is false written out (a
+# nightly review job that runs no plan of its own). That job fails when a line
+# is missing or the review does not finish; the nightly path above is unchanged.
 #
 # This file is a published mirror of the action maintained in the Agentiqa
 # monorepo; open an issue on this repo for questions or fixes.
@@ -174,34 +175,34 @@ inputs:
       With review: true: true runs the review without adding anything to your
       Agentiqa project (the CLI's --dry-run). The job summary and the review
       JSON show the cards it would leave; no card, issue or review reaches your
-      project and no starting point moves forward. One copy of the review goes
-      to the Agentiqa team so they can check the cards with you: the cards, the
+      project and no starting point moves forward. Every review, dry or saved,
+      sends one copy of the review to the Agentiqa team so they can check the
+      cards with you (a saved review sends it after its writes): the cards, the
       summary, and a trace of how the review reached them (changed file paths,
       commit subjects, pull request titles, how plans were linked to files, the
-      AI model's reasoning; secret-looking values redacted). It holds no whole
-      files, diffs or prompts unless you opt in to the diff hunks with
-      review-trace-hunks; like a saved card, it can quote the short text cited
-      as evidence: a changed line, or a sentence from a commit message, pull
+      AI model's reasoning, the diff hunks each decision rested on;
+      secret-looking values redacted, hunks capped). It holds no whole files or
+      prompts; like a saved card, it can quote the short text cited as
+      evidence: a changed line, or a sentence from a commit message, pull
       request description or code comment. Only the Agentiqa team reads it, it
-      does not appear in your project, and it is deleted after 30 days. Use it
-      for the first nights, then set it back to false. Only false (the default)
-      saves: any other value, such as a quoted 'True', is a dry run too, and
-      the setup check flags it.
+      does not appear in your project, and it is deleted after 30 days. Use
+      true for the first nights, then set it to false. false (or empty, the
+      default) saves, except with review-only: true, which saves only with
+      false written out. Any other value, such as a quoted 'True', is a dry run
+      too, and the setup check flags it.
     required: false
-    default: 'false'
+    default: ''
   review-trace-hunks:
     description: >-
-      With a dry run (review-dry-run: true, or review-only: true): true opts in
-      to sending the diff hunks each decision of the review rested on, in the
-      trace of the dry-run copy (the CLI's --trace-hunks): the changed lines as
-      the AI model read them, or the one commit's change a check compared, for
-      the files and commits each card, possible bug or decision cites. Each
-      hunk is stored once, secret-looking values are redacted, and the lines
-      and hunks are capped. They go only into the copy for the Agentiqa team
-      (deleted after 30 days), never into your project, the job summary or the
-      review JSON. Ignored, with a warning, when the review is not a dry run:
-      a saved review never sends diffs. Only true opts in: any other value
-      than false is ignored with a warning.
+      Accepted for compatibility; changes nothing (the CLI's --trace-hunks).
+      Every copy of a review carries the diff hunks each decision of the
+      review rested on: the changed lines as the AI model read them, or the one
+      commit's change a check compared, for the files and commits each card,
+      possible bug or decision cites. Each hunk is stored once, secret-looking
+      values are redacted, and the lines and hunks are capped. They go only
+      into the copy for the Agentiqa team (deleted after 30 days), never into
+      your project, the job summary or the review JSON. Any other value than
+      true or false is ignored with a warning.
     required: false
     default: 'false'
   review-timeout-minutes:
@@ -221,11 +222,14 @@ inputs:
       summary starts with one line per prerequisite, ok or missing, and the
       workflow line that fixes each missing one. Then the review runs on an
       earlier batch (review-batch) as a dry run: nothing is added to your
-      project, whatever review-dry-run says. Like every dry run, it sends one
-      copy of the review, with its trace, to the Agentiqa team (see
+      project unless review-dry-run is false, written out. A nightly job that
+      runs no plan of its own and reviews the plans' batch (review-batch empty:
+      the latest finished one) sets review-dry-run: false once its review goes
+      live, and then saves its cards like any review. Like every review, it
+      sends one copy of the review, with its trace, to the Agentiqa team (see
       review-dry-run); the copy is deleted after 30 days. Pass the same inputs
-      as the nightly. The job fails when a line is missing or the dry review
-      does not finish.
+      as the nightly. The job fails when a line is missing or the review does
+      not finish.
     required: false
     default: 'false'
   review-batch:
@@ -738,8 +742,9 @@ runs:
       # Placed before the upload so the review files ship in the artifact.
       # It starts with the setup check (one line per prerequisite): printed
       # first in review-only, and in a nightly only when a line is missing.
-      # In review-only it reviews an earlier batch as a dry run, and the
-      # last step (Gate on the setup check) fails the job on a missing line.
+      # In review-only it reviews an earlier batch (a dry run unless
+      # review-dry-run is false, written out), and the last step (Gate on the
+      # setup check) fails the job on a missing line.
       id: review
       if: ${{ !cancelled() && (inputs.review == 'true' || inputs.review-only == 'true') }}
       shell: bash
@@ -862,7 +867,14 @@ runs:
         # review below), and it is flagged: the workflow should say what it means.
         case "${REVIEW_DRY_RUN:-}" in
           true) check_line ok "review-dry-run" "true: the nightly review adds nothing to your project." ;;
-          false | '') check_line ok "review-dry-run" "false: the nightly review saves its cards." ;;
+          false) check_line ok "review-dry-run" "false: the nightly review saves its cards." ;;
+          '')
+            if [ -n "$review_only" ]; then
+              check_line ok "review-dry-run" "empty: this review-only run is a dry run; false written out saves its cards."
+            else
+              check_line ok "review-dry-run" "false: the nightly review saves its cards."
+            fi
+            ;;
           *) check_line missing "review-dry-run" "'$(shown "$REVIEW_DRY_RUN")' is neither true nor false: to be safe, the review runs dry and adds nothing to your project." '`review-dry-run: true` (or `false`), lowercase' ;;
         esac
 
@@ -1070,17 +1082,23 @@ runs:
         fi
 
         if [ -n "$review_only" ]; then
-          # No plan ran: the review takes the batch the check picked, and it is
-          # always a dry run (a check run never saves cards).
+          # No plan ran: the review takes the batch the check picked. It is a dry
+          # run unless review-dry-run is false, written out: a check started by
+          # hand saves nothing by default, and a nightly review job that runs
+          # no plan of its own saves once it says false (Alex, 2026-11-09).
           artifact_name="${INPUT_ARTIFACT_NAME:-}"
           [ -n "$artifact_name" ] || artifact_name="agentiqa-review-check-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-1}"
           echo "artifact-name=$(printf '%s' "$artifact_name" | tr -d '\n\r')" >> "$GITHUB_OUTPUT"
-          REVIEW_DRY_RUN="true"
+          [ "${REVIEW_DRY_RUN:-}" = "false" ] || REVIEW_DRY_RUN="true"
           BATCH_RUN_ID="$check_batch"
           if [ -z "$BATCH_RUN_ID" ]; then
             not_started "no batch to review. See the batch line of the setup check."
           fi
-          echo "Review-only: a dry review of batch ${BATCH_RUN_ID}."
+          if [ "$REVIEW_DRY_RUN" = "true" ]; then
+            echo "Review-only: a dry review of batch ${BATCH_RUN_ID}."
+          else
+            echo "Review-only: a saved review of batch ${BATCH_RUN_ID} (review-dry-run: false)."
+          fi
         elif [ -n "${REVIEW_BATCH:-}" ]; then
           echo "::warning title=Agentiqa QA review::review-batch is read only with review-only: true. This review takes the batch this run recorded."
         fi
@@ -1141,18 +1159,14 @@ runs:
             dry_note=" (dry run: nothing was added to your Agentiqa project)"
             ;;
         esac
-        # review-trace-hunks: the diff hunks of each decision in the dry-run
-        # copy's trace (opt-in). A saved review never sends diffs, so the
-        # input is ignored with a warning there; only true opts in, and any
-        # other value than true or false says so (never echoed back).
+        # review-trace-hunks: accepted for compatibility and passed on as
+        # --trace-hunks, which changes nothing: every copy of a review carries
+        # the diff hunks (the CLI records that the flag was passed). Any other
+        # value than true or false says so (never echoed back).
         if [ "${REVIEW_TRACE_HUNKS:-}" = "true" ]; then
-          if [ -n "$dry_note" ]; then
-            rargs+=(--trace-hunks)
-          else
-            echo "::warning title=Agentiqa QA review::review-trace-hunks is read only with a dry run (review-dry-run: true): a saved review never sends diffs. It was ignored."
-          fi
+          rargs+=(--trace-hunks)
         elif [ -n "${REVIEW_TRACE_HUNKS:-}" ] && [ "${REVIEW_TRACE_HUNKS}" != "false" ]; then
-          echo "::warning title=Agentiqa QA review::review-trace-hunks is neither true nor false: only true opts in to the diff hunks, so none are sent."
+          echo "::warning title=Agentiqa QA review::review-trace-hunks is neither true nor false: it changes nothing either way."
         fi
 
         # The review's time limit (review-timeout-minutes): a hung review must
@@ -1355,7 +1369,7 @@ runs:
 
     - name: Gate on the setup check
       # review-only only. A check run is green when every line of the setup
-      # check is ok and the dry review finished: the nightly is ready. Any
+      # check is ok and the review finished: the nightly is ready. Any
       # other result fails the job, so a missing line is a red check run, not
       # a red night.
       if: ${{ inputs.review-only == 'true' }}
@@ -1370,7 +1384,7 @@ runs:
           exit 1
         fi
         if [ "${REVIEW_EXIT_CODE:-}" != "0" ]; then
-          echo "::error::Every setup line is ok, but the dry review did not finish (review-exit-code ${REVIEW_EXIT_CODE:-empty}). The review step's warning says why."
+          echo "::error::Every setup line is ok, but the review did not finish (review-exit-code ${REVIEW_EXIT_CODE:-empty}). The review step's warning says why."
           exit 1
         fi
-        echo "Setup check ok and the dry review finished: the nightly review is ready."
+        echo "Setup check ok and the review finished: the nightly review is ready."

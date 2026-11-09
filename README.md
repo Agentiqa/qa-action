@@ -79,10 +79,10 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `review`           | no                          | `false`                           | `true`: QA Manager reviews the batch after the run (see [QA review after the run](#qa-review-after-the-run)). Never changes the outcome or the gate. |
 | `deployed-sha`     | with `review: true`         | `''`                              | The commit of the app this run tested (deployed where the plans ran); full/short sha or tag in the checkout. |
 | `review-since`     | no                          | `''`                              | Where plans without a starting point start (`--since`); needed on the first review. Keep it recent: it widens the whole review. |
-| `review-dry-run`   | no                          | `false`                           | `true`: nothing is added to your project (`--dry-run`); one copy, with a trace of how the review reached its cards, goes to the Agentiqa team and is deleted after 30 days. For the first nights. |
-| `review-trace-hunks` | no | `false` | With a dry run: `true` opts in to the diff hunks each decision rested on, in the copy's trace (`--trace-hunks`). Ignored with a warning on a saved review. |
+| `review-dry-run`   | no                          | empty (saves)                     | `true`: nothing is added to your project (`--dry-run`). For the first nights. With `review-only: true`, only `false` written out saves. Every review sends one copy, with a trace of how it reached its cards, to the Agentiqa team; deleted after 30 days. |
+| `review-trace-hunks` | no | `false` | Accepted for compatibility; changes nothing (`--trace-hunks`): every copy carries the diff hunks each decision rested on. |
 | `review-timeout-minutes` | no                    | `30`                              | The most minutes the review may take; a review still running then is stopped (`review-exit-code: 124`). Keep it below the time the job has left after its longest run. |
-| `review-only`      | no                          | `false`                           | `true`: no plan runs; the setup check, then a dry review of an earlier batch (see [Setup check and review-only](#setup-check-and-review-only)). The job fails on a missing line. |
+| `review-only`      | no                          | `false`                           | `true`: no plan runs; the setup check, then a review of an earlier batch, dry unless `review-dry-run: false` (see [Setup check and review-only](#setup-check-and-review-only)). The job fails on a missing line. |
 | `review-batch`     | no                          | `''`                              | With `review-only: true`: the batch to review; empty = the project's latest finished batch. |
 
 ## Outputs
@@ -164,14 +164,14 @@ The steps you add before the Action only for the review (the checkout, finding t
 run that night: check the setup by hand on a day run before the first night (below).
 
 With `review-dry-run: true` nothing is added to your Agentiqa project (no review, suggestion, issue or
-annotation; no watermark moves), and one copy of the review goes to the Agentiqa team: the cards, the
-summary, and a trace of how the review reached them (changed file paths, commit subjects, pull request
-titles, how plans were linked to files, the AI model's reasoning; secret-looking values redacted). It holds
-no whole files, diffs or prompts; like a saved card, it can quote the short text cited as evidence. Only the
-Agentiqa team reads it, and it is deleted after 30 days. With `review-trace-hunks: true` (opt-in, dry runs
-only) the trace also carries the diff hunks each decision rested on, each stored once, redacted and capped;
-they never reach the project, the job summary or the review JSON. A copy that does not go out is a warning;
-it never changes the review's exit code.
+annotation; no watermark moves). Every review, dry or saved (a saved one after its writes), sends one copy
+of the review to the Agentiqa team: the cards, the summary, and a trace of how the review reached them
+(changed file paths, commit subjects, pull request titles, how plans were linked to files, the AI model's
+reasoning, the diff hunks each decision rested on; secret-looking values redacted, hunks capped), and the
+change journal the next night starts from. It holds no whole files or prompts; like a saved card, it can
+quote the short text cited as evidence. Only the Agentiqa team reads it, and it is deleted after 30 days.
+The hunks never reach the project, the job summary or the review JSON. A copy that does not go out is a
+warning; it never changes the review's exit code.
 
 It does not start (warning, `review-exit-code: 2`) without a batch, without `deployed-sha`, outside a git
 checkout, or when the checkout lacks the commit (a checkout with no commit at all, which is what a failed
@@ -206,14 +206,16 @@ call, no write. The step writes the `setup-check` output.
 What no line proves: that the checked-out repository is your app's. A workflow that lives in a separate
 repository and checks itself out passes every line, so keep the nightly in the app's repository.
 
-`review-dry-run` is fail-safe: only `false` (or empty) saves cards. Any other value, such as a quoted
+`review-dry-run` is fail-safe: only `false` (or empty, outside review-only) saves cards. Any other value, such as a quoted
 `'True'`, runs the review dry, and the check flags it.
 
 - **Nightly** (`review: true`): the table goes above the review section only when a line is missing, as
   warnings. Nothing else changes.
 - **Review-only** (`review-only: true`, a run you start by hand before the first night): no plan runs. The
-  table comes first in the summary, the review takes `review-batch` or the latest finished batch and is
-  always a dry run, and the last step fails the job unless every line is ok and the dry review finished.
+  table comes first in the summary, the review takes `review-batch` or the latest finished batch, and the
+  last step fails the job unless every line is ok and the review finished. It is a dry run unless
+  `review-dry-run: false` is written out: a nightly review job that runs no plan of its own sets it once
+  its review goes live, and then saves its cards.
 
 The recipe (the lines to add to your nightly, how to start the check):
 [docs.agentiqa.com/docs/qa-review#before-the-first-night](https://docs.agentiqa.com/docs/qa-review#before-the-first-night).
