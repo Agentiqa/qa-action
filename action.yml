@@ -224,7 +224,7 @@ inputs:
       earlier batch (review-batch) as a dry run: nothing is added to your
       project unless review-dry-run is false, written out. A nightly job that
       runs no plan of its own and reviews the plans' batch (review-batch empty:
-      the latest finished one) sets review-dry-run: false once its review goes
+      the latest finished one with a run) sets review-dry-run: false once its review goes
       live, and then saves its cards like any review. Like every review, it
       sends one copy of the review, with its trace, to the Agentiqa team (see
       review-dry-run); the copy is deleted after 30 days. Pass the same inputs
@@ -235,7 +235,9 @@ inputs:
   review-batch:
     description: >-
       With review-only: true: the batch to review (batch_...). Leave empty for
-      the project's latest finished batch.
+      the project's latest finished batch that holds a run: a newer batch that
+      finished with no run (a night whose plans could not start) is skipped,
+      and the setup check names it.
     required: false
     default: ''
 
@@ -959,7 +961,7 @@ runs:
           elif [[ "$REVIEW_BATCH" =~ ^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$ ]]; then
             batch_arg="$REVIEW_BATCH"
           else
-            check_line missing "batch" "review-batch '$(shown "$REVIEW_BATCH")' is not a batch id." '`review-batch:` a batch id (batch_...), or leave it empty for the latest finished batch'
+            check_line missing "batch" "review-batch '$(shown "$REVIEW_BATCH")' is not a batch id." '`review-batch:` a batch id (batch_...), or leave it empty for the latest finished batch with a run'
           fi
         fi
         key_fix="\`service-key: ${GHX} secrets.AGENTIQA_SERVICE_KEY }}\`: a key of the project the nightly runs (Project Settings, CLI Service Keys)"

@@ -83,7 +83,7 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `review-trace-hunks` | no | `false` | Accepted for compatibility; changes nothing (`--trace-hunks`): every copy carries the diff hunks each decision rested on. |
 | `review-timeout-minutes` | no                    | `30`                              | The most minutes the review may take; a review still running then is stopped (`review-exit-code: 124`). Keep it below the time the job has left after its longest run. |
 | `review-only`      | no                          | `false`                           | `true`: no plan runs; the setup check, then a review of an earlier batch, dry unless `review-dry-run: false` (see [Setup check and review-only](#setup-check-and-review-only)). The job fails on a missing line. |
-| `review-batch`     | no                          | `''`                              | With `review-only: true`: the batch to review; empty = the project's latest finished batch. |
+| `review-batch`     | no                          | `''`                              | With `review-only: true`: the batch to review; empty = the project's latest finished batch with a run. |
 
 ## Outputs
 
@@ -212,10 +212,11 @@ repository and checks itself out passes every line, so keep the nightly in the a
 - **Nightly** (`review: true`): the table goes above the review section only when a line is missing, as
   warnings. Nothing else changes.
 - **Review-only** (`review-only: true`, a run you start by hand before the first night): no plan runs. The
-  table comes first in the summary, the review takes `review-batch` or the latest finished batch, and the
-  last step fails the job unless every line is ok and the review finished. It is a dry run unless
-  `review-dry-run: false` is written out: a nightly review job that runs no plan of its own sets it once
-  its review goes live, and then saves its cards.
+  table comes first in the summary, the review takes `review-batch` or the latest finished batch with a
+  run (a newer batch that finished with no run is skipped and named), and the last step fails the job
+  unless every line is ok and the review finished. It is a dry run unless `review-dry-run: false` is
+  written out: a nightly review job that runs no plan of its own sets it once its review goes live, and
+  then saves its cards.
 
 The recipe (the lines to add to your nightly, how to start the check):
 [docs.agentiqa.com/docs/qa-review#before-the-first-night](https://docs.agentiqa.com/docs/qa-review#before-the-first-night).
