@@ -207,14 +207,15 @@ inputs:
     default: 'false'
   review-timeout-minutes:
     description: >-
-      With review: true: the most minutes the review may take (default 30; a
-      review usually takes a few). A review still running then is stopped: the
+      With review: true: the most minutes the review may take (default 40; a
+      review usually takes a few, and the CLI is given 2 minutes less so it
+      finishes on its own first). A review still running then is stopped: the
       step warns, review-exit-code is 124, and the upload and the gate run as
       usual. Keep it below the time the job has left after its longest run: a
       job that reaches its own timeout-minutes is cancelled, and its gate never
       runs. A whole number of minutes, 1 or more.
     required: false
-    default: '30'
+    default: '40'
   review-only:
     description: >-
       true to check the review setup without running any test plan, for a run
@@ -1178,15 +1179,25 @@ runs:
         limit_min="${REVIEW_TIMEOUT_MINUTES:-}"
         limit_min="${limit_min//[[:space:]]/}"
         if [ -z "$limit_min" ]; then
-          limit_min=30
+          limit_min=40
         elif [[ ! "$limit_min" =~ ^[1-9][0-9]{0,3}$ ]]; then
-          echo "::warning title=Agentiqa QA review::review-timeout-minutes '$(shown "$REVIEW_TIMEOUT_MINUTES")' is not a whole number of minutes: using 30."
-          limit_min=30
+          echo "::warning title=Agentiqa QA review::review-timeout-minutes '$(shown "$REVIEW_TIMEOUT_MINUTES")' is not a whole number of minutes: using 40."
+          limit_min=40
         fi
         limit_s=$((limit_min * 60))
+        # The CLI's own time limit (AGENTIQA_REVIEW_MAX_MINUTES): 2 min under the
+        # watchdog's (1 at least), so the review finishes and sends its copy
+        # before it is stopped. A non-empty value the job sets is kept as is.
+        cli_min="${AGENTIQA_REVIEW_MAX_MINUTES:-}"
+        if [ -z "${cli_min//[[:space:]]/}" ]; then
+          cli_min=$((limit_min - 2))
+          if [ "$cli_min" -lt 1 ]; then cli_min=1; fi
+          export AGENTIQA_REVIEW_MAX_MINUTES="$cli_min"
+        fi
 
         echo "Running: npx -y agentiqa@${CLI_VERSION} ${rargs[*]}"
         echo "Time limit: ${limit_min} min (review-timeout-minutes)."
+        echo "CLI time limit: $(shown "$AGENTIQA_REVIEW_MAX_MINUTES") min (AGENTIQA_REVIEW_MAX_MINUTES)."
         # --json => one envelope on stdout (kept as a file), logs on stderr.
         # The CLI runs in a process group of its own (`set -m`), so the
         # watchdog stops it with everything it started: TERM at the limit,

@@ -81,7 +81,7 @@ A nightly `schedule` (plus `workflow_dispatch` for on-demand runs) is the intend
 | `review-since`     | no                          | `''`                              | Where plans without a starting point start (`--since`); needed on the first review. Keep it recent: it widens the whole review. |
 | `review-dry-run`   | no                          | empty (saves)                     | `true`: nothing is added to your project (`--dry-run`). For the first nights. With `review-only: true`, only `false` written out saves. Every review sends one copy, with a trace of how it reached its cards, to the Agentiqa team; deleted after 30 days. |
 | `review-trace-hunks` | no | `false` | Accepted for compatibility; changes nothing (`--trace-hunks`): every copy carries the diff hunks each decision rested on. |
-| `review-timeout-minutes` | no                    | `30`                              | The most minutes the review may take; a review still running then is stopped (`review-exit-code: 124`). Keep it below the time the job has left after its longest run. |
+| `review-timeout-minutes` | no                    | `40`                              | The most minutes the review may take; a review still running then is stopped (`review-exit-code: 124`). Keep it below the time the job has left after its longest run. |
 | `review-only`      | no                          | `false`                           | `true`: no plan runs; the setup check, then a review of an earlier batch, dry unless `review-dry-run: false` (see [Setup check and review-only](#setup-check-and-review-only)). The job fails on a missing line. |
 | `review-batch`     | no                          | `''`                              | With `review-only: true`: the batch to review; empty = the project's latest finished batch with a run. |
 
@@ -155,7 +155,8 @@ decides each card. The step:
 - resolves `deployed-sha` / `review-since` (short sha, tag or ref) to full shas with `git rev-parse`;
 - appends the review's job-summary section under the run table;
 - never fails: it warns, writes `review-exit-code` / `review-json-path`, and the gate never reads them;
-- stops a review that runs past `review-timeout-minutes` (default 30): TERM at the limit, KILL 10 s later,
+- stops a review that runs past `review-timeout-minutes` (default 40; the CLI itself gets 2 minutes less as
+  `AGENTIQA_REVIEW_MAX_MINUTES` unless the job sets it, so it wraps up first): TERM at the limit, KILL 10 s later,
   a warning and `review-exit-code: 124`. A job that reaches its own `timeout-minutes` is cancelled, gate
   included, so the limit must fit in what the job has left after its longest run.
 
